@@ -1,13 +1,17 @@
 const std = @import("std");
 const heap = std.heap;
 const log = std.log;
+const unicode = std.unicode;
 
 const Code = @import("Code.zig");
+const GeneralContext = @import("GeneralContext.zig");
+const unicode_utils = @import("unicode.zig");
 
 pub const TokenType = enum {
     eof,
     synthesized,
     illegal,
+    invalid,
     empty_string,
     lbracket,
     rbracket,
@@ -54,8 +58,8 @@ pub const TokenType = enum {
     arrow,
     rune_lit,
     string_lit,
-    integer_lit,
-    floating_lit,
+    int_lit,
+    float_lit,
     identifier,
     kw_not,
     kw_and,
@@ -91,75 +95,58 @@ pub const TokenType = enum {
     kw_extern,
 };
 
+const Keyword = en: {
+    const field_names = std.meta.fieldNames(TokenType);
+
+    var index: usize = 0;
+    var fields: [field_names.len]std.builtin.Type.EnumField = undefined;
+
+    for (std.meta.fieldNames(TokenType)) |tt| {
+        if (std.mem.startsWith(u8, tt, "kw_")) {
+            fields[index] = .{ .name = tt[3..], .value = index };
+            index += 1;
+        }
+    }
+
+    break :en @Type(.{ .@"enum" = .{
+        .tag_type = @typeInfo(TokenType).@"enum".tag_type,
+        .decls = &.{},
+        .fields = fields[0..index],
+        .is_exhaustive = true,
+    } });
+};
+
 pub const Base = enum {
-    hex,
     decimal,
     binary,
     octal,
+    hex,
 };
 
-pub const IntegerSuffix = struct {
-    bits: u8,
-    signed: bool,
-};
-
-pub const FloatingSuffix = struct {
-    bits: u8,
-};
-
-pub const Suffix = union(enum) {
-    integer: IntegerSuffix,
-    floating: FloatingSuffix,
-};
-
-pub const IntegerLit = struct {
-    span: []const u8,
+pub const IntLit = struct {
     base: Base,
-    value: u64,
-    suffix: IntegerSuffix = .{ .bits = 32, .signed = false },
+    value: u64 = 0,
+    suffix: ?Code.Offset = null,
 };
 
-pub const Exponent = struct {
-    span: []const u8,
-    value: u64,
-    signed: bool,
-};
-
-pub const FloatingLit = struct {
-    span: []const u8,
-    integer: IntegerLit,
-    fractional: ?IntegerLit = null,
-    exponent: ?Exponent = null,
-    suffix: FloatingSuffix = .{ .bits = 32 },
-};
-
-pub const RuneLit = struct {
-    value: u32,
-};
-
-pub const StringLit = struct {
-    value: []const u8,
+pub const Lit = union(enum) {
+    int: IntLit,
 };
 
 pub const Token = struct {
     type: TokenType,
     span: []const u8,
-    literal: union(enum) {
-        integer: IntegerLit,
-        floating: FloatingLit,
-        rune: RuneLit,
-        string: StringLit,
-        none: void,
-    } = .none,
+    lit: ?Lit = null,
 
     pub fn offset(t: Token, code: Code) usize {
-        return @as(usize, @intFromPtr(code.text.ptr)) - @as(usize, @intFromPtr(t.span.ptr));
+        return @as(usize, @as(usize, @intFromPtr(t.span.ptr) - @intFromPtr(code.text.ptr)));
     }
     pub fn after(t: Token, code: Code) usize {
         return t.offset(code) + t.span.len;
     }
 };
 
+ctx: *GeneralContext,
 code: Code,
 arena: *heap.ArenaAllocator,
 cache: ?Token = null,
@@ -167,8 +154,9 @@ cursor: usize = 0,
 
 const Lexer = @This();
 
-pub fn init(arena: *heap.ArenaAllocator, code: Code) Lexer {
+pub fn init(ctx: *GeneralContext, arena: *heap.ArenaAllocator, code: Code) Lexer {
     var l: Lexer = .{
+        .ctx = ctx,
         .code = code,
         .arena = arena,
     };
@@ -178,21 +166,23 @@ pub fn init(arena: *heap.ArenaAllocator, code: Code) Lexer {
 
 pub fn skipWhitespace(l: *Lexer) void {
     var in_comment = false;
-    l.cursor += out: for (l.code.text[l.cursor..], 0..) |ch, shift| {
+
+    while (l.cursor < l.code.text.len) : (l.cursor += 1) {
+        const c = l.current();
         if (in_comment) {
-            if (ch != '\n') {
+            if (c != '\n') {
                 continue;
             }
             in_comment = false;
         }
-        switch (ch) {
+        switch (c) {
             '\n', '\t', '\r', ' ' => {},
             '/' => if (l.ahead('/')) {
                 in_comment = true;
             },
-            else => break :out shift,
+            else => break,
         }
-    } else unreachable;
+    }
 }
 
 fn token(l: Lexer, ty: TokenType, len: usize) Token {
@@ -200,6 +190,12 @@ fn token(l: Lexer, ty: TokenType, len: usize) Token {
         .type = ty,
         .span = l.code.text[l.cursor..][0..len],
     };
+}
+
+fn tokenLit(l: Lexer, ty: TokenType, len: usize, lit: Lit) Token {
+    var tok = l.token(ty, len);
+    tok.lit = lit;
+    return tok;
 }
 
 fn scan(l: Lexer, fwd: usize) ?u8 {
@@ -224,6 +220,35 @@ fn current(l: Lexer) u8 {
     return l.code.text[l.cursor];
 }
 
+fn illegalToken(l: *Lexer) Token {
+    const illegal: u8 = l.current();
+    if (0x21 <= illegal and illegal <= 0x7e) {
+        // It is in the printable range of ascii characters, raise error formatting
+        // it as a {c}
+        l.code.raise(l.ctx.error_out, l.cursor, "illegal character '{c}'", .{illegal}) catch unreachable;
+    } else {
+        // Print as hex otherwise
+        l.code.raise(l.ctx.error_out, l.cursor, "illegal character 0x{x}", .{illegal}) catch unreachable;
+    }
+    return l.token(.illegal, 1);
+}
+
+const Runes = struct {
+    text: []const u8,
+    consumed: usize = 0,
+
+    pub fn next(it: *Runes) !?u32 {
+        if (it.text.len == 0) {
+            return null;
+        }
+        const rune_len = try unicode.utf8ByteSequenceLength(it.text[0]);
+        const rune = try unicode.utf8Decode(it.text[0..rune_len]);
+        it.consumed += rune_len;
+        it.text = it.text[rune_len..];
+        return rune;
+    }
+};
+
 pub fn peek(l: *Lexer) Token {
     if (l.cache) |tok| {
         if (tok.offset(l.code) == l.cursor) {
@@ -234,7 +259,7 @@ pub fn peek(l: *Lexer) Token {
         return l.token(.eof, 0);
     }
 
-    return switch (l.current()) {
+    l.cache = switch (l.current()) {
         '[' => l.token(.lbracket, 1),
         ']' => l.token(.rbracket, 1),
         '(' => l.token(.lparen, 1),
@@ -245,27 +270,21 @@ pub fn peek(l: *Lexer) Token {
         '?' => l.token(.qmark, 1),
         ',' => l.token(.comma, 1),
         '`' => l.token(.comma, 1),
-        '!' => if (l.ahead('=')) l.token(.not_equal, 2)
-               else l.token(.bang, 1),
-        '*' => if (l.ahead('=')) l.token(.star_equal, 2)
-               else l.token(.star, 1),
-        ':' => if (l.ahead(':')) l.token(.scope, 2)
-               else l.token(.colon, 1),
-        '=' => if (l.ahead('=')) l.token(.dequal, 2)
-               else l.token(.equal, 1),
-        '/' => if (l.ahead('=')) l.token(.slash_equal, 2)
-               else l.token(.slash, 1),
-        '.' => if (l.ahead('.')) l.token(.ddot, 2)
-               else l.token(.dot, 1),
+        '!' => if (l.ahead('=')) l.token(.not_equal, 2) else l.token(.bang, 1),
+        '*' => if (l.ahead('=')) l.token(.star_equal, 2) else l.token(.star, 1),
+        ':' => if (l.ahead(':')) l.token(.scope, 2) else l.token(.colon, 1),
+        '=' => if (l.ahead('=')) l.token(.dequal, 2) else l.token(.equal, 1),
+        '/' => if (l.ahead('=')) l.token(.slash_equal, 2) else l.token(.slash, 1),
+        '|' => if (l.ahead('=')) l.token(.pipe_equal, 2) else l.token(.pipe, 1),
+        // TODO: add attempt to parse float here
+        '.' => if (l.ahead('.')) l.token(.ddot, 2) else l.token(.dot, 1),
         '<' => switch (l.scan(1) orelse '\x00') {
-            '<' => if (l.ahead_n('=', 2)) l.token(.lshift_equal, 3)
-                   else l.token(.lshift, 2),
+            '<' => if (l.ahead_n('=', 2)) l.token(.lshift_equal, 3) else l.token(.lshift, 2),
             '=' => l.token(.lt_equal, 2),
             else => l.token(.lt, 1),
         },
         '>' => switch (l.scan(1) orelse '\x00') {
-            '>' => if (l.ahead_n('=', 2)) l.token(.rshift_equal, 3)
-                   else l.token(.rshift, 2),
+            '>' => if (l.ahead_n('=', 2)) l.token(.rshift_equal, 3) else l.token(.rshift, 2),
             '=' => l.token(.gt_equal, 2),
             else => l.token(.gt, 1),
         },
@@ -279,9 +298,24 @@ pub fn peek(l: *Lexer) Token {
             '=' => l.token(.minus_equal, 2),
             else => l.token(.minus, 1),
         },
-        '0' ... '9' => l.lexNumber(),
-        else => unreachable,
+        // TODO: order of lexing
+        //
+        // * try lex float
+        // * try lex int
+        '0'...'9' => l.lexInt() catch l.token(.invalid, 1),
+        else => out: {
+            const ident = l.lexIdent();
+            const tt_opt = if (std.meta.stringToEnum(Keyword, ident.span)) |kw| switch (kw) {
+                inline else => |tag| @field(TokenType, "kw_" ++ @tagName(tag)),
+            } else null;
+            break :out if (tt_opt) |tt|
+                l.token(tt, ident.span.len)
+            else
+                ident;
+        },
     };
+
+    return l.cache.?;
 }
 
 pub fn consume(l: *Lexer) void {
@@ -289,556 +323,149 @@ pub fn consume(l: *Lexer) void {
     l.skipWhitespace();
 }
 
-const LexicalScan = struct {
-    lexer: Lexer,
-    scan: usize,
+fn lexZeroInt(l: Lexer) Token {
+    var int_lit = IntLit{
+        .base = .decimal,
+        .value = 0,
+    };
+    const next = l.scan(1) orelse '\x00';
+    const len: usize = switch (next) {
+        'u', 's' => len: {
+            int_lit.suffix = l.cursor + 1;
+            break :len 2;
+        },
+        else => 1,
+    };
+    return l.tokenLit(.int_lit, len, .{ .int = int_lit });
+}
 
-    fn init(l: Lexer, shift: usize) LexicalScan {
-        return .{
-            .lexer = l,
-            .scan = shift,
-        };
-    }
+const LexError = error{LexFailed};
 
-    fn text(lc: LexicalScan) []const u8 {
-        return lc.lexer.code.text[lc.lexer.cursor + lc.scan..];
-    }
-
-    fn shiftBy(lc: *LexicalScan, by: usize) void {
-        lc.scan += by;
-    }
-
-    fn reset(lc: *LexicalScan) void {
-        lc.scan = 0;
-    }
-
-    fn current(lc: LexicalScan) u8 {
-        if (lc.text().len > 0) {
-            return lc.text()[0];
-        }
-        return '\x00';
-    }
-
-    fn poke(lc: *LexicalScan, ahead_: usize) u8 {
-        if (lc.scan + ahead_ < lc.text().len) {
-            defer lc.scan += ahead_;
-            return lc.text()[lc.scan + ahead_ - 1];
-        }
-        return '\x00';
-    }
-
-    fn parseInt(lc: *LexicalScan, base: Base) ?IntegerLit {
-        var value: u64 = 0;
-        var span: []const u8 = undefined;
-        var bits: u8 = 32;
-
-        switch (base) {
-            .hex => {
-                var shift: usize = 0;
-
-                out: for (lc.text()) |ch| {
-                    switch (ch) {
-                        '0' ... '9' => {
-                            value <<= 4;
-                            value |= ch - '0';
-                        },
-                        'a' ... 'f' => {
-                            value <<= 4;
-                            value |= ch - 'a' + 10;
-                        },
-                        'A' ... 'F' => {
-                            value <<= 4;
-                            value |= ch - 'A' + 10;
-                        },
-                        else => if (shift == 0 or ch != '_') {
-                            break :out;
-                        },
-                    }
-                    shift += 1;
-                }
-
-                if (shift == 0) {
-                    return null;
-                }
-
-                if (64 - @clz(value) > bits) {
-                    bits = 64;
-                }
-
-                span = lc.text()[0..shift];
-                lc.shiftBy(shift);
-            },
-            .binary => {
-                var shift: usize = 0;
-
-                for (lc.text()) |ch| {
-                    switch (ch) {
-                        '0', '1' => {
-                            value <<= 1;
-                            value |= ch - '0';
-                        },
-                        else => if (shift == 0 or ch != '_') {
-                            break;
-                        },
-                    }
-                    shift += 1;
-                }
-
-                if (shift == 0) {
-                    return null;
-                }
-
-                if (64 - @clz(value) > bits) {
-                    bits = 64;
-                }
-
-                span = lc.text()[0..shift];
-                lc.shiftBy(shift);
-            },
-            .octal => {
-                var shift: usize = 0;
-
-                for (lc.text()) |ch| {
-                    switch (ch) {
-                        '0' ... '7' => {
-                            value <<= 3;
-                            value |= ch - '0';
-                        },
-                        else => if (shift == 0 or ch != '_') {
-                            break;
-                        },
-                    }
-                    shift += 1;
-                }
-
-                if (shift == 0) {
-                    return null;
-                }
-
-                if (64 - @clz(value) > bits) {
-                    bits = 64;
-                }
-
-                span = lc.text()[0..shift];
-                lc.shiftBy(shift);
-            },
-            .decimal => {
-                var shift: usize = 0;
-
-                for (lc.text()) |ch| {
-                    switch (ch) {
-                        '0' ... '9' => {
-                            value *= 10;
-                            value += ch - '0';
-                        },
-                        else => if (shift == 0 or ch != '_') {
-                            break;
-                        },
-                    }
-                    shift += 1;
-                }
-
-                if (shift == 0) {
-                    return null;
-                }
-
-                if (64 - @clz(value) > bits) {
-                    bits = 64;
-                }
-
-                span = lc.text()[0..shift];
-                lc.shiftBy(shift);
-            },
-        }
-
-        return .{
-            .base = base,
-            .value = value,
-            .span = span,
-            .suffix = .{
-                .bits = bits,
-                .signed = false,
-            },
-        };
-    }
-
-    fn parseBinaryExponent(lc: *LexicalScan) ?Exponent {
-        var shift: usize = 0;
-
-        const signed = switch (lc.current()) {
-            '+', '-' => out: {
-                shift += 1;
-                break :out lc.current() == '-';
-            },
-            else => false,
-        };
-
-        const before = shift;
-
-        var value: u64 = 0;
-        for (lc.text()[shift..]) |ch| {
-            switch (ch) {
-                '0', '1' => {
-                    value <<= 1;
-                    value |= ch - '0';
-                },
-                else => break,
-            }
-            shift += 1;
-        }
-
-        // The numeric part is non optional, if it fails to parse, anything
-        // before is no longer consumed as the whole token fails to parse
-        if (shift == before) {
-            return null;
-        }
-
-        const span = lc.text()[0..shift];
-        lc.shiftBy(shift);
-
-        return .{
-            .span = span,
-            .value = value,
-            .signed = signed,
-        };
-    }
-
-    fn parseDecimalExponent(lc: *LexicalScan) ?Exponent {
-        var shift: usize = 0;
-
-        const signed = switch (lc.current()) {
-            '+', '-' => out: {
-                shift += 1;
-                break :out lc.current() == '-';
-            },
-            else => false,
-        };
-
-        const before = shift;
-
-        var value: u64 = 0;
-        for (lc.text()[shift..]) |ch| {
-            switch (ch) {
-                '0' ... '9' => {
-                    value *= 10;
-                    value += ch - '0';
-                },
-                else => break,
-            }
-            shift += 1;
-        }
-
-        // The numeric part is non optional, if it fails to parse, anything
-        // before is no longer consumed as the whole token fails to parse
-        if (shift == before) {
-            return null;
-        }
-
-        const span = lc.text()[0..shift];
-        lc.shiftBy(shift);
-
-        return .{
-            .span = span,
-            .value = value,
-            .signed = signed,
-        };
-    }
+const Digits = struct {
+    len: usize,
+    value: u64,
 };
 
-fn lexNumber(l: Lexer) Token {
-    var lc = LexicalScan.init(l, 0);
+fn handleDecimalDigit(value: u64, digit: u8) ?u64 {
+    return switch (digit) {
+        '0'...'9' => (value * 10) + (digit - '0'),
+        '_' => value,
+        else => null,
+    };
+}
 
-    var int: ?IntegerLit = null;
-    if (lc.current() == '0') {
-        int = switch (lc.poke(2)) {
-            'x' => lc.parseInt(.hex),
-            'o' => lc.parseInt(.octal),
-            'b' => lc.parseInt(.binary),
-            else => null,
+fn handleBinaryDigit(value: u64, digit: u8) ?u64 {
+    return switch (digit) {
+        '0', '1' => (value << 1) | (digit - '0'),
+        '_' => value,
+        else => null,
+    };
+}
+
+fn handleOctalDigit(value: u64, digit: u8) ?u64 {
+    return switch (digit) {
+        '0'...'7' => (value << 3) | (digit - '0'),
+        '_' => value,
+        else => null,
+    };
+}
+
+fn handleHexDigit(value: u64, digit: u8) ?u64 {
+    return switch (digit) {
+        '0'...'9' => (value << 4) | (digit - '0'),
+        'a'...'f' => (value << 4) | (10 + digit - 'a'),
+        'A'...'F' => (value << 4) | (10 + digit - 'A'),
+        '_' => value,
+        else => null,
+    };
+}
+
+fn lexDigits(l: Lexer, comptime base: Base, start: usize) LexError!Digits {
+    var value: u64 = 0;
+    var offset = start;
+
+    var next = l.scan(offset) orelse '\x00';
+    while ((comptime switch (base) {
+        .decimal => handleDecimalDigit,
+        .binary => handleBinaryDigit,
+        .octal => handleOctalDigit,
+        .hex => handleHexDigit,
+    })(value, next)) |v| {
+        value = v;
+        offset += 1;
+        next = l.scan(offset) orelse '\x00';
+    }
+
+    if (offset == start) {
+        return error.LexFailed;
+    }
+
+    return .{
+        .len = offset - start,
+        .value = value,
+    };
+}
+
+fn lexInt(l: Lexer) LexError!Token {
+    var offset: usize = 0;
+    var int_lit = IntLit{
+        .base = .decimal,
+    };
+
+    if (l.current() == '0') {
+        const next = l.scan(1) orelse '\x00';
+        int_lit.base = switch (next) {
+            'b' => .binary,
+            'o' => .octal,
+            'x' => .hex,
+            else => return l.lexZeroInt(),
         };
-
-        if (int == null) {
-            // Didn't successfully parse a valid integer.
-            // Means it should just be a plain '0' - only interpret as
-            // single digit zero value
-            lc.reset();
-            int = .{
-                .span = lc.text()[0..1],
-                .base = .decimal,
-                .value = 0,
-            };
-            lc.shiftBy(1);
-        } else {
-            // extend the span to include the prefix
-            int.?.span = l.code.text[l.cursor..][0..lc.scan];
-        }
-    } else {
-        int = lc.parseInt(.decimal);
-        if (int != null) {
-            // extend the span to include the prefix
-            int.?.span = l.code.text[l.cursor..][0..lc.scan];
-        }
+        offset += 2;
     }
 
-    std.debug.assert(int != null);
-
-    var fract: ?IntegerLit = null;
-    if (lc.current() == '.') {
-        lc.shiftBy(1);
-        if (lc.parseInt(int.?.base)) |fr| {
-            fract = fr;
-        } else {
-            lc.scan -= 1;
-        }
+    const next = l.scan(offset) orelse '\x00';
+    if (next == 0 and int_lit.base == .decimal) {
+        // We cannot have a zero at this point for decimal, fail the lex
+        return error.LexFailed;
     }
 
-    var exponent: ?Exponent = null;
-    switch (lc.current()) {
-        'e', 'E' => {
-            if (int.?.base == .decimal) {
-                // Only valid for decimal integers
-                lc.shiftBy(1);
+    const digits = switch (int_lit.base) {
+        inline else => |base| try l.lexDigits(base, offset),
+    };
+    offset += digits.len;
 
-                if (lc.parseDecimalExponent()) |exp| {
-                    exponent = exp;
-                } else {
-                    lc.scan -= 1;
-                }
-            }
+    int_lit.suffix = switch (l.scan(offset) orelse '\x00') {
+        'u', 's' => off: {
+            defer offset += 1;
+            break :off l.cursor + offset;
         },
-        'p', 'P' => {
-            if (int.?.base == .hex) {
-                // Only valid for hexidecimal integers
-                lc.shiftBy(1);
-                if (lc.parseBinaryExponent()) |exp| {
-                    exponent = exp;
-                } else {
-                    lc.scan -= 1;
-                }
-            }
-        },
-        else => {},
-    }
+        else => null,
+    };
 
-    var integer_suffix: ?IntegerSuffix = null;
-    if (fract == null) {
-        // Only try parse integer suffix, if no fractional part
-        switch (lc.current()) {
-            's', 'u' => {
-                const p = lc.current();
-
-                lc.shiftBy(1);
-
-                var bits: u8 = 32;
-
-                if (lc.current() == '8') {
-                    lc.shiftBy(1);
-                    bits = 8;
-                }
-
-                if (bits != 8 and lc.text().len >= 2) {
-                    const num = lc.text()[0..2];
-                    if (std.mem.eql(u8, num, "16")) {
-                        lc.shiftBy(2);
-                        bits = 16;
-                    } else if (std.mem.eql(u8, num, "32")) {
-                        lc.shiftBy(2);
-                        bits = 32;
-                    } else if (std.mem.eql(u8, num, "64")) {
-                        lc.shiftBy(2);
-                        bits = 64;
-                    }
-                }
-
-                integer_suffix = .{ 
-                    .bits = bits,
-                    .signed = p == 's',
-                };
-            },
-            else => {},
-        }
-    }
-
-    var floating_suffix: ?FloatingSuffix = null;
-    if (integer_suffix == null and (int.?.base == .decimal or int.?.base == .hex)) {
-        if (lc.current() == 'f') {
-            if (lc.text().len >= 2) {
-                const num = lc.text()[1..][0..2];
-
-                var bits: ?u8 = null;
-                if (std.mem.eql(u8, num, "32")) {
-                    lc.shiftBy(3);
-                    bits = 32;
-                } else if (std.mem.eql(u8, num, "64")) {
-                    lc.shiftBy(3);
-                    bits = 64;
-                }
-
-                if (bits) |b| {
-                    floating_suffix = .{
-                        .bits = b,
-                    };
-                }
-            }
-        }
-    }
-
-    // At this point we have all the information needed to determine whether
-    // the literal is a float or integer.
-
-    const is_float = floating_suffix != null or fract != null;
-    const is_integer = !is_float;
-
-    if (is_integer) {
-        var final_lit: IntegerLit = .{
-            .span = l.code.text[l.cursor..][0..lc.scan],
-            .base = int.?.base,
-            .value = int.?.value,
-            .suffix = int.?.suffix,
-        };
-
-        if (integer_suffix) |sfx| {
-            final_lit.suffix = sfx;
-        }
-
-        if (exponent) |exp| {
-            if (exp.signed) {
-                log.err("TODO error, signed exponent in integer literal", .{});
-            }
-            final_lit.value = std.math.powi(u64, final_lit.value, exp.value) catch {
-                log.err("TODO error over/under flow (cannot be represented error)", .{});
-                unreachable;
-            };
-        }
-
-        // TODO: check that the value is representable
-
-        return .{
-            .type = .integer_lit,
-            .span = final_lit.span,
-            .literal = .{ .integer = final_lit },
-        };
-    } 
-
-    if (is_float) {
-        var final_lit: FloatingLit = .{
-            .span = l.code.text[l.cursor..][0..lc.scan],
-            .integer = int.?,
-            .fractional = fract,
-            .exponent = exponent,
-        };
-
-        if (floating_suffix) |sfx| {
-            final_lit.suffix = sfx;
-        }
-
-        // TODO: if hex float then it must have binary exponent
-        // TODO: check that the value is representable
-
-        return .{
-            .type = .floating_lit,
-            .span = final_lit.span,
-            .literal = .{ .floating = final_lit },
-        };
-    }
-
-    unreachable;
+    int_lit.value = digits.value;
+    return l.tokenLit(.int_lit, offset, .{ .int = int_lit });
 }
 
-fn lex1(arena: *heap.ArenaAllocator, text: []const u8) Token {
-    const code = Code.init(arena, text) catch unreachable;
-    var lexer = Lexer.init(arena, code);
-    return lexer.peek();
-}
+fn lexIdent(l: *Lexer) Token {
+    var runes = Runes{ .text = l.code.text[l.cursor..] };
+    const first = runes.next() catch null orelse return l.illegalToken();
 
-fn expectInt(arena: *heap.ArenaAllocator, text: []const u8, value: u64, base: Base, suffix: ?IntegerSuffix) !void {
-    const tok = lex1(arena, text);
-
-    try std.testing.expectEqual(.integer_lit, tok.type);
-    try std.testing.expectEqual(.integer, std.meta.activeTag(tok.literal));
-    if (tok.literal == .integer) {
-        try std.testing.expectEqual(base, tok.literal.integer.base);
-        try std.testing.expectEqual(value, tok.literal.integer.value);
-        try std.testing.expectEqual(suffix orelse IntegerSuffix { .bits = 32, .signed = false }, tok.literal.integer.suffix);
-        try std.testing.expectEqual(text, tok.literal.integer.span);
+    if (!unicode_utils.isIdentStart(first)) {
+        return l.illegalToken();
     }
 
-    try std.testing.expectEqual(text, tok.span);
-}
-
-fn expectFloat(arena: *heap.ArenaAllocator, text: []const u8, value: u64, fract: ?u64, exp: ?i64, base: Base, suffix: ?FloatingSuffix) !void {
-    const tok = lex1(arena, text);
-
-    try std.testing.expectEqual(.floating_lit, tok.type);
-    try std.testing.expectEqual(.floating, std.meta.activeTag(tok.literal));
-    if (tok.literal == .floating) {
-        try std.testing.expectEqual(base, tok.literal.floating.integer.base);
-        try std.testing.expectEqual(value, tok.literal.floating.integer.value);
-        if (fract) |fr| {
-            try std.testing.expectEqual(fr, tok.literal.floating.fractional.?.value);
-        } else {
-            try std.testing.expectEqual(null, tok.literal.floating.fractional);
+    while (runes.next() catch null) |rune| {
+        if (!unicode_utils.isIdentContinue(rune)) {
+            break;
         }
-        if (exp) |ex| {
-            try std.testing.expectEqual(@abs(ex), tok.literal.floating.exponent.?.value);
-            try std.testing.expectEqual(ex < 0, tok.literal.floating.exponent.?.signed);
-        } else {
-            try std.testing.expectEqual(null, tok.literal.floating.exponent);
-        }
-        try std.testing.expectEqual(suffix orelse FloatingSuffix { .bits = 32 }, tok.literal.floating.suffix);
-        try std.testing.expectEqual(text, tok.literal.floating.span);
     }
 
-    try std.testing.expectEqual(text, tok.span);
-}
+    var tok = Token{ .type = .identifier, .span = l.code.text[l.cursor..][0..runes.consumed - 1] };
+    // Allow trailing ' in identifier
+    const after = tok.after(l.code);
+    if (after < l.code.text.len and l.code.text[after] == '\'') {
+        tok.span.len += 1;
+    }
 
-test "integer lexing" {
-    const testing = std.testing;
-    var arena = heap.ArenaAllocator.init(testing.allocator);
-
-    try expectInt(&arena, "0", 0, .decimal, null);
-    try expectInt(&arena, "20", 20, .decimal, null);
-    try expectInt(&arena, "12u32", 12, .decimal, null);
-    try expectInt(&arena, "0s32", 0, .decimal, .{ .bits = 32, .signed = true });
-    try expectInt(&arena, "33s8", 33, .decimal, .{ .bits = 8, .signed = true });
-    try expectInt(&arena, "0u64", 0, .decimal, .{ .bits = 64, .signed = false });
-    try expectInt(&arena, "27u", 27, .decimal, .{ .bits = 32, .signed = false });
-    try expectInt(&arena, "1s", 1, .decimal, .{ .bits = 32, .signed = true });
-    try expectInt(&arena, "0x10", 0x10, .hex, null);
-    try expectInt(&arena, "0x40_00s", 0x4000, .hex, .{ .bits = 32, .signed = true });
-    try expectInt(&arena, "0b1011", 11, .binary, null);
-    try expectInt(&arena, "0o120s8", 0o120, .octal, .{ .bits = 8, .signed = true });
-    try expectInt(&arena, "10e2", try std.math.powi(u64, 10, 2), .decimal, null);
-    try expectInt(&arena, "10e+10", try std.math.powi(u64, 10, 10), .decimal, null);
-    try expectInt(&arena, "0xeFFFF_FFFFF", 0xEFFFFFFFFF, .hex, .{ .bits = 64, .signed = false });
-
-    // Make sure lexer only parses complete valid tokens. For example in the case
-    // below since no number follows the first '.', it is not a valid floating
-    // literal, so overall only the first integer is lexed by the number parser.
-    const tok = lex1(&arena, "10..10");
-    try testing.expectEqualStrings("10", tok.span);
-    try testing.expectEqual(.integer_lit, tok.type);
-    try testing.expectEqual(.integer, std.meta.activeTag(tok.literal));
-    try testing.expectEqual(10, tok.literal.integer.value);
-    try testing.expectEqual(IntegerSuffix { .bits = 32, .signed = false }, tok.literal.integer.suffix);
-}
-
-test "floating point lexing" {
-    const testing = std.testing;
-    var arena = heap.ArenaAllocator.init(testing.allocator);
-
-    try expectFloat(&arena, "0.0", 0, 0, null, .decimal, null);
-    try expectFloat(&arena, "20f32", 20, null, null, .decimal, null);
-    try expectFloat(&arena, "0.2e-3", 0, 2, -3, .decimal, null);
-    try expectFloat(&arena, "0xaa.20p10f64", 0xaa, 0x20, 2, .hex, .{ .bits = 64 });
-    try expectFloat(&arena, "34.0", 34, 0, null, .decimal, .{ .bits = 32 });
-    try expectFloat(&arena, "34.3f64", 34, 3, null, .decimal, .{ .bits = 64 });
-
-    const tok = lex1(&arena, "10.0->10");
-    try testing.expectEqualStrings("10.0", tok.span);
-    try testing.expectEqual(.floating_lit, tok.type);
-    try testing.expectEqual(.floating, std.meta.activeTag(tok.literal));
-    try testing.expectEqual(10, tok.literal.floating.integer.value);
-    try testing.expectEqual(0, tok.literal.floating.fractional.?.value);
-    try testing.expectEqual(FloatingSuffix { .bits = 32 }, tok.literal.floating.suffix);
+    return tok;
 }

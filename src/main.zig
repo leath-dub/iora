@@ -5,6 +5,7 @@ const log = std.log;
 
 const Code = @import("Code.zig");
 const Lexer = @import("Lexer.zig");
+const GeneralContext = @import("GeneralContext.zig");
 
 const Cli = struct {
     input_path: []const u8,
@@ -35,13 +36,10 @@ fn openErrorMsg(e: fs.File.OpenError) ?[]const u8 {
 }
 
 pub fn main() !void {
-    var dbg_alloc = heap.DebugAllocator(.{}){};
-    defer {
-        if (dbg_alloc.deinit() == .leak) {
-            std.debug.assert(!dbg_alloc.detectLeaks());
-        }
-    }
-    const allocator = dbg_alloc.allocator();
+    var default_ctx = GeneralContext.Default.init();
+    defer default_ctx.deinit();
+
+    var ctx = default_ctx.general();
 
     const cli = parseArgs() catch std.process.exit(1);
     const input_file = fs.cwd().openFile(cli.input_path, .{}) catch |e| {
@@ -51,14 +49,14 @@ pub fn main() !void {
     };
     defer input_file.close();
 
-    var arena = heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
+    var cst = ctx.createLifetime();
+    defer cst.deinit();
 
-    const text = try input_file.readToEndAlloc(allocator, std.math.maxInt(usize));
-    const code = try Code.init(&arena, try arena.allocator().dupe(u8, text));
-    allocator.free(text);
+    const text = try input_file.readToEndAlloc(ctx.allocator, std.math.maxInt(usize));
+    const code = try Code.init(&cst, cli.input_path, try cst.allocator().dupe(u8, text));
+    ctx.allocator.free(text);
 
-    var lexer = Lexer.init(&arena, code);
+    var lexer = Lexer.init(&ctx, &cst, code);
     var tok = lexer.peek();
     while (tok.type != .eof) : ({ lexer.consume(); tok = lexer.peek(); }) {
         std.debug.print("{any}\n", .{tok});
