@@ -323,27 +323,14 @@ pub fn consume(l: *Lexer) void {
     l.skipWhitespace();
 }
 
-fn lexZeroInt(l: Lexer) Token {
-    var int_lit = IntLit{
-        .base = .decimal,
-        .value = 0,
-    };
-    const next = l.scan(1) orelse '\x00';
-    const len: usize = switch (next) {
-        'u', 's' => len: {
-            int_lit.suffix = l.cursor + 1;
-            break :len 2;
-        },
-        else => 1,
-    };
-    return l.tokenLit(.int_lit, len, .{ .int = int_lit });
-}
-
 const LexError = error{LexFailed};
 
 const Digits = struct {
     len: usize,
     value: u64,
+    pub fn zero() Digits {
+        return .{ .len = 1, .value = 0 };
+    }
 };
 
 fn handleDecimalDigit(value: u64, digit: u8) ?u64 {
@@ -412,26 +399,28 @@ fn lexInt(l: Lexer) LexError!Token {
         .base = .decimal,
     };
 
+    var is_zero = false;
+
     if (l.current() == '0') {
         const next = l.scan(1) orelse '\x00';
         int_lit.base = switch (next) {
             'b' => .binary,
             'o' => .octal,
             'x' => .hex,
-            else => return l.lexZeroInt(),
+            else => .decimal,
         };
-        offset += 2;
+        is_zero = int_lit.base == .decimal;
+        if (!is_zero) {
+            offset += 2;
+        }
     }
 
-    const next = l.scan(offset) orelse '\x00';
-    if (next == 0 and int_lit.base == .decimal) {
-        // We cannot have a zero at this point for decimal, fail the lex
-        return error.LexFailed;
+    var digits = Digits.zero();
+    if (!is_zero) {
+        digits = switch (int_lit.base) {
+            inline else => |base| try l.lexDigits(base, offset),
+        };
     }
-
-    const digits = switch (int_lit.base) {
-        inline else => |base| try l.lexDigits(base, offset),
-    };
     offset += digits.len;
 
     int_lit.suffix = switch (l.scan(offset) orelse '\x00') {
