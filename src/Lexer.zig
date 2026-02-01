@@ -767,7 +767,6 @@ test "integer lexing" {
     try t.expectIntLit("0x_67_7a_2f_cc_40_c6", 0x677a2fcc40c6, null);
     // try t.expectIntLit("170141183460469231731687303715884105727", 170141183460469231731687303715884105727, null);
     // try t.expectIntLit("170141183_460469_231731_687303_715884_105727", 170141183460469231731687303715884105727, null);
-
 }
 
 test "floating point lexing" {
@@ -798,3 +797,20 @@ test "floating point lexing" {
     try t.expectTokenTypes("0X.0", &.{ .int_lit, .ident, .float_lit });
     try t.expectTokenTypes("0x1.5e-2", &.{ .int_lit, .float_lit }); // 0x1, .5e-2
 }
+
+// test "fuzz test" {
+//     var t: LexerTest = undefined;
+//     t.setUp();
+//     defer t.tearDown();
+//
+//     try std.testing.fuzz(&t, struct {
+//         fn runTest(ctx: *LexerTest, input: []const u8) anyerror!void {
+//             var lexer = Lexer.init(&ctx.gc, &ctx.syntax, try .init(&ctx.syntax, "<test input>", input));
+//             var tok = lexer.peek();
+//             while (tok.type != .eof) : ({
+//                 lexer.consume();
+//                 tok = lexer.peek();
+//             }) {}
+//         }
+//     }.runTest, .{});
+// }

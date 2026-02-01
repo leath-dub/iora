@@ -60,6 +60,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         }),
+        // .use_llvm = true, // for fuzz testing
     });
     tests.root_module.addImport("unicode_types", unicode_types);
     tests.root_module.addImport("unicode_data", unicode_data);
