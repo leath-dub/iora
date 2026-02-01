@@ -45,3 +45,26 @@ pub const Default = struct {
         };
     }
 };
+
+pub const Testing = struct {
+    var writer_buf: [4096]u8 = undefined;
+
+    error_out: fs.File.Writer,
+
+    pub fn init() Testing {
+        return .{
+            .error_out = fs.File.stderr().writer(&writer_buf),
+        };
+    }
+
+    pub fn deinit(tc: *Testing) void {
+        tc.error_out.interface.flush() catch unreachable;
+    }
+
+    pub fn general(tc: *Testing) Self {
+        return .{
+            .error_out = &tc.error_out.interface,
+            .allocator = std.testing.allocator,
+        };
+    }
+};

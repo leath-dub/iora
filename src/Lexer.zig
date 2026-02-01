@@ -2,6 +2,7 @@ const std = @import("std");
 const heap = std.heap;
 const log = std.log;
 const unicode = std.unicode;
+const math = std.math;
 
 const Code = @import("Code.zig");
 const GeneralContext = @import("GeneralContext.zig");
@@ -60,7 +61,7 @@ pub const TokenType = enum {
     string_lit,
     int_lit,
     float_lit,
-    identifier,
+    ident,
     kw_not,
     kw_and,
     kw_or,
@@ -129,8 +130,25 @@ pub const IntLit = struct {
     suffix: ?Code.Offset = null,
 };
 
+pub const FloatLit = struct {
+    const LexFlag = enum {
+        int,
+        fract,
+    };
+    int: u64 = 0,
+    fract: u64 = 0,
+    exp: union(enum) {
+        signed: u64,
+        unsigned: u64,
+    } = .{ .unsigned = 1 },
+    // Needed for parse time to disambiguite foo.0 from being token sequence
+    // <ident> <dot> <int lit> or <ident> <float lit>
+    lex_flags: std.enums.EnumSet(LexFlag) = .{},
+};
+
 pub const Lit = union(enum) {
     int: IntLit,
+    float: FloatLit,
 };
 
 pub const Token = struct {
@@ -276,8 +294,8 @@ pub fn peek(l: *Lexer) Token {
         '=' => if (l.ahead('=')) l.token(.dequal, 2) else l.token(.equal, 1),
         '/' => if (l.ahead('=')) l.token(.slash_equal, 2) else l.token(.slash, 1),
         '|' => if (l.ahead('=')) l.token(.pipe_equal, 2) else l.token(.pipe, 1),
-        // TODO: add attempt to parse float here
-        '.' => if (l.ahead('.')) l.token(.ddot, 2) else l.token(.dot, 1),
+        '.' => l.lexFloat()
+            catch if (l.ahead('.')) l.token(.ddot, 2) else l.token(.dot, 1),
         '<' => switch (l.scan(1) orelse '\x00') {
             '<' => if (l.ahead_n('=', 2)) l.token(.lshift_equal, 3) else l.token(.lshift, 2),
             '=' => l.token(.lt_equal, 2),
@@ -298,11 +316,9 @@ pub fn peek(l: *Lexer) Token {
             '=' => l.token(.minus_equal, 2),
             else => l.token(.minus, 1),
         },
-        // TODO: order of lexing
-        //
-        // * try lex float
-        // * try lex int
-        '0'...'9' => l.lexInt() catch l.token(.invalid, 1),
+        '0'...'9' => l.lexFloat()
+            catch l.lexInt()
+            catch l.token(.invalid, 1),
         else => out: {
             const ident = l.lexIdent();
             const tt_opt = if (std.meta.stringToEnum(Keyword, ident.span)) |kw| switch (kw) {
@@ -328,80 +344,293 @@ const LexError = error{LexFailed};
 const Digits = struct {
     len: usize,
     value: u64,
+    overflow: bool,
+
     pub fn zero() Digits {
-        return .{ .len = 1, .value = 0 };
+        return .{ .len = 1, .value = 0, .overflow = false };
+    }
+
+    fn incorporateDecimalDigit(d: *Digits, digit: u8) bool {
+        overflow: switch (digit) {
+            '0'...'9' => {
+                const mul = math.mul(u64, d.value, 10) catch break :overflow;
+                const sum = math.add(u64, mul, digit - '0') catch break :overflow;
+                d.len += 1;
+                d.value = sum;
+                return true;
+            },
+            '_' => {
+                d.len += 1;
+                return true;
+            },
+            else => return false,
+        }
+        d.len += 1;
+        d.overflow = true;
+        return true;
+    }
+
+    fn incorporateHexDigit(d: *Digits, digit: u8) bool {
+        const result, const overflow = @shlWithOverflow(d.value, 4);
+        if (digit == '_') {
+            d.len += 1;
+            return true;
+        }
+        if (switch (digit) {
+            '0'...'9' => digit - '0',
+            'a'...'f' => 10 + digit - 'a',
+            'A'...'F' => 10 + digit - 'A',
+            else => null,
+        }) |digit_value| {
+            d.len += 1;
+            if (overflow == 1) {
+                d.overflow = true;
+            }
+            if (!d.overflow) {
+                d.value = result | digit_value;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    fn incorporateBinaryDigit(d: *Digits, digit: u8) bool {
+        const result, const overflow = @shlWithOverflow(d.value, 1);
+        if (digit == '_') {
+            d.len += 1;
+            return true;
+        }
+        if (switch (digit) {
+            '0', '1' => digit - '0',
+            else => null,
+        }) |digit_value| {
+            d.len += 1;
+            if (overflow == 1) {
+                d.overflow = true;
+            }
+            if (!d.overflow) {
+                d.value = result | digit_value;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    fn incorporateOctalDigit(d: *Digits, digit: u8) bool {
+        const result, const overflow = @shlWithOverflow(d.value, 3);
+        if (digit == '_') {
+            d.len += 1;
+            return true;
+        }
+        if (switch (digit) {
+            '0'...'7' => digit - '0',
+            else => null,
+        }) |digit_value| {
+            d.len += 1;
+            if (overflow == 1) {
+                d.overflow = true;
+            }
+            if (!d.overflow) {
+                d.value = result | digit_value;
+            }
+            return true;
+        }
+        return false;
     }
 };
 
-fn handleDecimalDigit(value: u64, digit: u8) ?u64 {
-    return switch (digit) {
-        '0'...'9' => (value * 10) + (digit - '0'),
-        '_' => value,
-        else => null,
-    };
-}
+fn lexHexFloat(l: *Lexer) LexError!Token {
+    var offset: usize = 2; // start at offset 2 to trim '0x'
+    var float_lit = FloatLit{};
 
-fn handleBinaryDigit(value: u64, digit: u8) ?u64 {
-    return switch (digit) {
-        '0', '1' => (value << 1) | (digit - '0'),
-        '_' => value,
-        else => null,
-    };
-}
+    std.debug.assert(l.ahead_n('0', 0));
+    std.debug.assert(l.ahead_n('x', 1));
 
-fn handleOctalDigit(value: u64, digit: u8) ?u64 {
-    return switch (digit) {
-        '0'...'7' => (value << 3) | (digit - '0'),
-        '_' => value,
-        else => null,
-    };
-}
+    // Lex the mantissa
 
-fn handleHexDigit(value: u64, digit: u8) ?u64 {
-    return switch (digit) {
-        '0'...'9' => (value << 4) | (digit - '0'),
-        'a'...'f' => (value << 4) | (10 + digit - 'a'),
-        'A'...'F' => (value << 4) | (10 + digit - 'A'),
-        '_' => value,
-        else => null,
-    };
-}
+    var int_digits: ?Digits = null;
+    var fract_digits: ?Digits = null;
 
-fn lexDigits(l: Lexer, comptime base: Base, start: usize) LexError!Digits {
-    var value: u64 = 0;
-    var offset = start;
-
-    var next = l.scan(offset) orelse '\x00';
-    while ((comptime switch (base) {
-        .decimal => handleDecimalDigit,
-        .binary => handleBinaryDigit,
-        .octal => handleOctalDigit,
-        .hex => handleHexDigit,
-    })(value, next)) |v| {
-        value = v;
-        offset += 1;
-        next = l.scan(offset) orelse '\x00';
+    {
+        var digits = std.mem.zeroes(Digits);
+        if (digits.incorporateHexDigit(l.scan(offset) orelse '\x00')) {
+            int_digits = try l.lexDigits(.hex, offset);
+            offset += int_digits.?.len;
+            float_lit.int = int_digits.?.value;
+        }
     }
 
-    if (offset == start) {
+    if (l.ahead_n('.', offset)) {
+        offset += 1;
+        fract_digits = l.lexDigits(.hex, offset) catch out: {
+            // Failed to lex digits. This is only acceptible if we did specify
+            // the integer part. Otherwise we would be allowing `0x.` as a valid
+            // floating point literal for 0, which is just odd :).
+            if (int_digits != null) {
+                break :out null;
+            }
+            return error.LexFailed;
+        };
+        if (fract_digits) |fd| {
+            offset += fd.len;
+            float_lit.fract += fd.value;
+        }
+    }
+
+    if (int_digits != null) {
+        float_lit.lex_flags.insert(.int);
+    }
+
+    if (fract_digits != null) {
+        float_lit.lex_flags.insert(.fract);
+    }
+
+    // Lex the exponent
+    if (!l.ahead_n('p', offset)) {
+        return error.LexFailed;
+    }
+    offset += 1;
+
+    var signed = false;
+
+    if (l.ahead_n('-', offset)) {
+        offset += 1;
+        signed = true;
+    } else if (l.ahead_n('+', offset)) {
+        offset += 1;
+    }
+
+    const exp = try l.lexDigits(.decimal, offset);
+    offset += exp.len;
+
+    if (signed) {
+        float_lit.exp = .{ .signed = exp.value };
+    } else {
+        float_lit.exp = .{ .unsigned = exp.value };
+    }
+
+    return l.tokenLit(.float_lit, offset, .{ .float = float_lit });
+}
+
+fn lexDecimalFloat(l: *Lexer) LexError!Token {
+    var offset: usize = 0;
+    var float_lit = FloatLit{};
+
+    var int_digits: ?Digits = null;
+    var fract_digits: ?Digits = null;
+
+    // Lex the mantissa
+    {
+        var digits = std.mem.zeroes(Digits);
+        if (digits.incorporateDecimalDigit(l.scan(offset) orelse '\x00')) {
+            int_digits = try l.lexDigits(.decimal, offset);
+            offset += int_digits.?.len;
+            float_lit.int = int_digits.?.value;
+        }
+    }
+
+    const decimal_point = l.ahead_n('.', offset);
+    if (decimal_point) {
+        offset += 1;
+        fract_digits = l.lexDigits(.decimal, offset) catch out: {
+            // Only acceptible to have no digits after '.' in case the
+            // integer part was specified - this is so we cant allow just '.' to
+            // lex as a floating point literal.
+            if (int_digits != null) {
+                break :out null;
+            }
+            return error.LexFailed;
+        };
+        if (fract_digits) |fd| {
+            offset += fd.len;
+            float_lit.fract += fd.value;
+        }
+    }
+
+    if (int_digits != null) {
+        float_lit.lex_flags.insert(.int);
+    }
+
+    if (fract_digits != null) {
+        float_lit.lex_flags.insert(.fract);
+    }
+
+    // Lex the exponent
+    if (l.ahead_n('e', offset)) {
+        offset += 1;
+        var signed = false;
+
+        if (l.ahead_n('-', offset)) {
+            offset += 1;
+            signed = true;
+        } else if (l.ahead_n('+', offset)) {
+            offset += 1;
+        }
+
+        const exp = try l.lexDigits(.decimal, offset);
+        offset += exp.len;
+
+        if (signed) {
+            float_lit.exp = .{ .signed = exp.value };
+        } else {
+            float_lit.exp = .{ .unsigned = exp.value };
+        }
+    } else {
+        // We only allow no exponent if '.' was specified. This is to
+        // disambiguite between integer literal and float literal.
+        if (!decimal_point) {
+            return error.LexFailed;
+        }
+    }
+
+    return l.tokenLit(.float_lit, offset, .{ .float = float_lit });
+}
+
+fn lexFloat(l: *Lexer) LexError!Token {
+    if (l.current() == '0') {
+        const next = l.scan(1) orelse '\x00';
+        if (next == 'x') {
+            return l.lexHexFloat();
+        }
+    }
+    return l.lexDecimalFloat();
+}
+
+fn lexDigits(l: *Lexer, comptime base: Base, start: usize) LexError!Digits {
+    const handleDigit = comptime switch (base) {
+        .decimal => Digits.incorporateDecimalDigit,
+        .binary => Digits.incorporateBinaryDigit,
+        .octal => Digits.incorporateOctalDigit,
+        .hex => Digits.incorporateHexDigit,
+    };
+
+    var digits = Digits{ .len = 0, .value = 0, .overflow = false };
+    var next = l.scan(start + digits.len) orelse '\x00';
+    while (handleDigit(&digits, next)) {
+        next = l.scan(start + digits.len) orelse '\x00';
+    }
+
+    if (digits.len == 0) {
         return error.LexFailed;
     }
 
-    return .{
-        .len = offset - start,
-        .value = value,
-    };
+    if (digits.overflow) {
+        const offset = l.cursor + start;
+        l.code.raise(l.ctx.error_out, offset, "number '{s}' is too large to be stored as u64", .{ l.code.text[offset..][0..digits.len] }) catch unreachable;
+    }
+
+    return digits;
 }
 
-fn lexInt(l: Lexer) LexError!Token {
+fn lexInt(l: *Lexer) LexError!Token {
     var offset: usize = 0;
     var int_lit = IntLit{
         .base = .decimal,
     };
 
-    var is_zero = false;
+    const zero_start = l.current() == '0';
 
-    if (l.current() == '0') {
+    if (zero_start) {
         const next = l.scan(1) orelse '\x00';
         int_lit.base = switch (next) {
             'b' => .binary,
@@ -409,14 +638,20 @@ fn lexInt(l: Lexer) LexError!Token {
             'x' => .hex,
             else => .decimal,
         };
-        is_zero = int_lit.base == .decimal;
-        if (!is_zero) {
+
+        if (int_lit.base != .decimal) {
             offset += 2;
+        } else {
+            var digits = std.mem.zeroes(Digits);
+            if (digits.incorporateOctalDigit(l.scan(2) orelse '\x00')) {
+                int_lit.base = .octal;
+                offset += 1;
+            }
         }
     }
 
     var digits = Digits.zero();
-    if (!is_zero) {
+    if (!zero_start or int_lit.base != .decimal) {
         digits = switch (int_lit.base) {
             inline else => |base| try l.lexDigits(base, offset),
         };
@@ -449,7 +684,7 @@ fn lexIdent(l: *Lexer) Token {
         }
     }
 
-    var tok = Token{ .type = .identifier, .span = l.code.text[l.cursor..][0..runes.consumed - 1] };
+    var tok = Token{ .type = .ident, .span = l.code.text[l.cursor..][0..runes.consumed - 1] };
     // Allow trailing ' in identifier
     const after = tok.after(l.code);
     if (after < l.code.text.len and l.code.text[after] == '\'') {
@@ -457,4 +692,119 @@ fn lexIdent(l: *Lexer) Token {
     }
 
     return tok;
+}
+
+fn float(int: u64, fract: u64, exp: i64, comptime lex_flags: anytype) FloatLit {
+    var float_lit = FloatLit{ .int = int, .fract = fract, .lex_flags = .initMany(&lex_flags) };
+    if (exp < 0) {
+        float_lit.exp = .{ .signed = @abs(exp) };
+    } else {
+        float_lit.exp = .{ .unsigned = @intCast(exp) };
+    }
+    return float_lit;
+}
+
+const LexerTest = struct {
+    tc: GeneralContext.Testing,
+    gc: GeneralContext,
+    syntax: heap.ArenaAllocator,
+
+    pub fn setUp(t: *LexerTest) void {
+        t.tc = GeneralContext.Testing.init();
+        t.gc = t.tc.general();
+        t.syntax = t.gc.createLifetime();
+    }
+
+    pub fn tearDown(t: *LexerTest) void {
+        t.syntax.deinit();
+        t.tc.deinit();
+    }
+
+    pub fn expectIntLit(t: *LexerTest, text: []const u8, value: u64, suffix: ?u8) !void {
+        var lexer = Lexer.init(
+            &t.gc,
+            &t.syntax,
+            try .init(&t.syntax, "<test input>", text));
+        const tok = lexer.peek();
+        try std.testing.expectEqual(.int_lit, tok.type);
+        try std.testing.expect(tok.lit != null);
+        try std.testing.expectEqual(.int, @as(std.meta.Tag(Lit), tok.lit.?));
+        var suffix_got: ?u8 = null;
+        if (tok.lit.?.int.suffix) |off| {
+            suffix_got = text[off];
+        }
+        try std.testing.expectEqual(suffix, suffix_got);
+        try std.testing.expectEqual(value, tok.lit.?.int.value);
+    }
+
+    pub fn expectFloatLit(t: *LexerTest, text: []const u8, float_lit: FloatLit) !void {
+        var lexer = Lexer.init(
+            &t.gc,
+            &t.syntax,
+            try .init(&t.syntax, "<test input>", text));
+        const tok = lexer.peek();
+        try std.testing.expectEqual(.float_lit, tok.type);
+        try std.testing.expect(tok.lit != null);
+        try std.testing.expectEqual(.float, @as(std.meta.Tag(Lit), tok.lit.?));
+        try std.testing.expectEqual(float_lit, tok.lit.?.float);
+    }
+
+    pub fn expectTokenTypes(t: *LexerTest, text: []const u8, types: []const TokenType) !void {
+        var lexer = Lexer.init(
+            &t.gc,
+            &t.syntax,
+            try .init(&t.syntax, "<test input>", text));
+        for (types) |ty| {
+            try std.testing.expectEqual(ty, lexer.peek().type);
+            lexer.consume();
+        }
+    }
+};
+
+test "integer lexing" {
+    var t: LexerTest = undefined;
+    t.setUp();
+    defer t.tearDown();
+
+    // Data taken from: https://go.dev/ref/spec
+    try t.expectIntLit("42", 42, null);
+    try t.expectIntLit("4_2", 42, null);
+    try t.expectIntLit("0600", 0o600, null);
+    try t.expectIntLit("0_600", 0o600, null);
+    try t.expectIntLit("0o600", 0o600, null);
+    try t.expectIntLit("0xBadFace", 0xbadface, null);
+    try t.expectIntLit("0xBad_Face", 0xbadface, null);
+    try t.expectIntLit("0x_67_7a_2f_cc_40_c6", 0x677a2fcc40c6, null);
+    // try t.expectIntLit("170141183460469231731687303715884105727", 170141183460469231731687303715884105727, null);
+    // try t.expectIntLit("170141183_460469_231731_687303_715884_105727", 170141183460469231731687303715884105727, null);
+
+}
+
+test "floating point lexing" {
+    var t: LexerTest = undefined;
+    t.setUp();
+    defer t.tearDown();
+
+    // Data taken from: https://go.dev/ref/spec
+    try t.expectFloatLit("0.", float(0, 0, 1, .{ .int }));
+    try t.expectFloatLit("072.40", float(72, 40, 1, .{ .int, .fract }));
+    try t.expectFloatLit("2.71828", float(2, 71828, 1, .{ .int, .fract }));
+    try t.expectFloatLit("1.e+0", float(1, 0, 0, .{ .int }));
+    try t.expectFloatLit("6.67428e-11", float(6, 67428, -11, .{ .int, .fract }));
+    try t.expectFloatLit("1e6", float(1, 0, 6, .{ .int }));
+    try t.expectFloatLit(".25", float(0, 25, 1, .{ .fract }));
+    try t.expectFloatLit(".12345e+5", float(0, 12345, 5, .{ .fract }));
+    try t.expectFloatLit("1_5.", float(15, 0, 1, .{ .int }));
+    try t.expectFloatLit("0.15e+0_2", float(0, 15, 2, .{ .int, .fract }));
+    try t.expectFloatLit("0x1p-2", float(1, 0, -2, .{ .int }));
+    try t.expectFloatLit("0x2.p10", float(2, 0, 10, .{ .int }));
+    try t.expectFloatLit("0x1.Fp+0", float(1, 0xF, 0, .{ .int, .fract }));
+    try t.expectFloatLit("0x.8p-1", float(0, 8, -1, .{ .fract }));
+    try t.expectFloatLit("0x_1FFFp-16", float(0x1FFF, 0, -16, .{ .int }));
+
+    // Negative test cases
+    try t.expectTokenTypes("0x15e-2", &.{ .int_lit, .minus, .int_lit });
+    try t.expectTokenTypes("0x.p1", &.{ .invalid, .ident, .dot, .ident, .int_lit });
+    try t.expectTokenTypes("0X.0", &.{ .int_lit, .ident, .float_lit });
+    try t.expectTokenTypes("0x1.5e-2", &.{ .int_lit, .float_lit }); // 0x1, .5e-2
 }
