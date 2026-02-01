@@ -75,11 +75,7 @@ pub fn main() !void {
     try wtr.interface.print("pub const data = [_]unicode.CodepointGroup{{\n", .{});
 
     for (final_data.items) |grp| {
-        try wtr.interface.print(
-            "    .{{ .start = {any}, .end = {any}, .category = .{s} }},\n",
-            .{
-            grp.start,
-            grp.end, @tagName(grp.category) });
+        try wtr.interface.print("    .{{ .start = {any}, .end = {any}, .category = .{s} }},\n", .{ grp.start, grp.end, @tagName(grp.category) });
     }
 
     try wtr.interface.print("}};\n", .{});

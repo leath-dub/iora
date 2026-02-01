@@ -11,7 +11,7 @@ const Cli = struct {
     input_path: []const u8,
 };
 
-fn parseArgs() error{ ParseFailed }!Cli {
+fn parseArgs() error{ParseFailed}!Cli {
     var cli: Cli = undefined;
 
     var args = std.process.args();
@@ -44,7 +44,7 @@ pub fn main() !void {
     const cli = parseArgs() catch std.process.exit(1);
     const input_file = fs.cwd().openFile(cli.input_path, .{}) catch |e| {
         const msg = openErrorMsg(e) orelse @errorName(e);
-        log.err("opening file {s}: {s}\n", .{cli.input_path, msg});
+        log.err("opening file {s}: {s}\n", .{ cli.input_path, msg });
         std.process.exit(1);
     };
     defer input_file.close();
@@ -58,7 +58,10 @@ pub fn main() !void {
 
     var lexer = Lexer.init(&ctx, &cst, code);
     var tok = lexer.peek();
-    while (tok.type != .eof) : ({ lexer.consume(); tok = lexer.peek(); }) {
+    while (tok.type != .eof) : ({
+        lexer.consume();
+        tok = lexer.peek();
+    }) {
         std.debug.print("{any}\n", .{tok});
     }
 }

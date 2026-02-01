@@ -109,12 +109,14 @@ const Keyword = en: {
         }
     }
 
-    break :en @Type(.{ .@"enum" = .{
-        .tag_type = @typeInfo(TokenType).@"enum".tag_type,
-        .decls = &.{},
-        .fields = fields[0..index],
-        .is_exhaustive = true,
-    } });
+    break :en @Type(.{
+        .@"enum" = .{
+            .tag_type = @typeInfo(TokenType).@"enum".tag_type,
+            .decls = &.{},
+            .fields = fields[0..index],
+            .is_exhaustive = true,
+        },
+    });
 };
 
 pub const Base = enum {
@@ -294,8 +296,7 @@ pub fn peek(l: *Lexer) Token {
         '=' => if (l.ahead('=')) l.token(.dequal, 2) else l.token(.equal, 1),
         '/' => if (l.ahead('=')) l.token(.slash_equal, 2) else l.token(.slash, 1),
         '|' => if (l.ahead('=')) l.token(.pipe_equal, 2) else l.token(.pipe, 1),
-        '.' => l.lexFloat()
-            catch if (l.ahead('.')) l.token(.ddot, 2) else l.token(.dot, 1),
+        '.' => l.lexFloat() catch if (l.ahead('.')) l.token(.ddot, 2) else l.token(.dot, 1),
         '<' => switch (l.scan(1) orelse '\x00') {
             '<' => if (l.ahead_n('=', 2)) l.token(.lshift_equal, 3) else l.token(.lshift, 2),
             '=' => l.token(.lt_equal, 2),
@@ -316,9 +317,7 @@ pub fn peek(l: *Lexer) Token {
             '=' => l.token(.minus_equal, 2),
             else => l.token(.minus, 1),
         },
-        '0'...'9' => l.lexFloat()
-            catch l.lexInt()
-            catch l.token(.invalid, 1),
+        '0'...'9' => l.lexFloat() catch l.lexInt() catch l.token(.invalid, 1),
         else => out: {
             const ident = l.lexIdent();
             const tt_opt = if (std.meta.stringToEnum(Keyword, ident.span)) |kw| switch (kw) {
@@ -616,7 +615,7 @@ fn lexDigits(l: *Lexer, comptime base: Base, start: usize) LexError!Digits {
 
     if (digits.overflow) {
         const offset = l.cursor + start;
-        l.code.raise(l.ctx.error_out, offset, "number '{s}' is too large to be stored as u64", .{ l.code.text[offset..][0..digits.len] }) catch unreachable;
+        l.code.raise(l.ctx.error_out, offset, "number '{s}' is too large to be stored as u64", .{l.code.text[offset..][0..digits.len]}) catch unreachable;
     }
 
     return digits;
@@ -684,7 +683,7 @@ fn lexIdent(l: *Lexer) Token {
         }
     }
 
-    var tok = Token{ .type = .ident, .span = l.code.text[l.cursor..][0..runes.consumed - 1] };
+    var tok = Token{ .type = .ident, .span = l.code.text[l.cursor..][0 .. runes.consumed - 1] };
     // Allow trailing ' in identifier
     const after = tok.after(l.code);
     if (after < l.code.text.len and l.code.text[after] == '\'') {
@@ -721,10 +720,7 @@ const LexerTest = struct {
     }
 
     pub fn expectIntLit(t: *LexerTest, text: []const u8, value: u64, suffix: ?u8) !void {
-        var lexer = Lexer.init(
-            &t.gc,
-            &t.syntax,
-            try .init(&t.syntax, "<test input>", text));
+        var lexer = Lexer.init(&t.gc, &t.syntax, try .init(&t.syntax, "<test input>", text));
         const tok = lexer.peek();
         try std.testing.expectEqual(.int_lit, tok.type);
         try std.testing.expect(tok.lit != null);
@@ -738,10 +734,7 @@ const LexerTest = struct {
     }
 
     pub fn expectFloatLit(t: *LexerTest, text: []const u8, float_lit: FloatLit) !void {
-        var lexer = Lexer.init(
-            &t.gc,
-            &t.syntax,
-            try .init(&t.syntax, "<test input>", text));
+        var lexer = Lexer.init(&t.gc, &t.syntax, try .init(&t.syntax, "<test input>", text));
         const tok = lexer.peek();
         try std.testing.expectEqual(.float_lit, tok.type);
         try std.testing.expect(tok.lit != null);
@@ -750,10 +743,7 @@ const LexerTest = struct {
     }
 
     pub fn expectTokenTypes(t: *LexerTest, text: []const u8, types: []const TokenType) !void {
-        var lexer = Lexer.init(
-            &t.gc,
-            &t.syntax,
-            try .init(&t.syntax, "<test input>", text));
+        var lexer = Lexer.init(&t.gc, &t.syntax, try .init(&t.syntax, "<test input>", text));
         for (types) |ty| {
             try std.testing.expectEqual(ty, lexer.peek().type);
             lexer.consume();
@@ -786,21 +776,21 @@ test "floating point lexing" {
     defer t.tearDown();
 
     // Data taken from: https://go.dev/ref/spec
-    try t.expectFloatLit("0.", float(0, 0, 1, .{ .int }));
+    try t.expectFloatLit("0.", float(0, 0, 1, .{.int}));
     try t.expectFloatLit("072.40", float(72, 40, 1, .{ .int, .fract }));
     try t.expectFloatLit("2.71828", float(2, 71828, 1, .{ .int, .fract }));
-    try t.expectFloatLit("1.e+0", float(1, 0, 0, .{ .int }));
+    try t.expectFloatLit("1.e+0", float(1, 0, 0, .{.int}));
     try t.expectFloatLit("6.67428e-11", float(6, 67428, -11, .{ .int, .fract }));
-    try t.expectFloatLit("1e6", float(1, 0, 6, .{ .int }));
-    try t.expectFloatLit(".25", float(0, 25, 1, .{ .fract }));
-    try t.expectFloatLit(".12345e+5", float(0, 12345, 5, .{ .fract }));
-    try t.expectFloatLit("1_5.", float(15, 0, 1, .{ .int }));
+    try t.expectFloatLit("1e6", float(1, 0, 6, .{.int}));
+    try t.expectFloatLit(".25", float(0, 25, 1, .{.fract}));
+    try t.expectFloatLit(".12345e+5", float(0, 12345, 5, .{.fract}));
+    try t.expectFloatLit("1_5.", float(15, 0, 1, .{.int}));
     try t.expectFloatLit("0.15e+0_2", float(0, 15, 2, .{ .int, .fract }));
-    try t.expectFloatLit("0x1p-2", float(1, 0, -2, .{ .int }));
-    try t.expectFloatLit("0x2.p10", float(2, 0, 10, .{ .int }));
+    try t.expectFloatLit("0x1p-2", float(1, 0, -2, .{.int}));
+    try t.expectFloatLit("0x2.p10", float(2, 0, 10, .{.int}));
     try t.expectFloatLit("0x1.Fp+0", float(1, 0xF, 0, .{ .int, .fract }));
-    try t.expectFloatLit("0x.8p-1", float(0, 8, -1, .{ .fract }));
-    try t.expectFloatLit("0x_1FFFp-16", float(0x1FFF, 0, -16, .{ .int }));
+    try t.expectFloatLit("0x.8p-1", float(0, 8, -1, .{.fract}));
+    try t.expectFloatLit("0x_1FFFp-16", float(0x1FFF, 0, -16, .{.int}));
 
     // Negative test cases
     try t.expectTokenTypes("0x15e-2", &.{ .int_lit, .minus, .int_lit });

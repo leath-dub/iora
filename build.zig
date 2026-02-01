@@ -37,8 +37,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const unicode_data = b.createModule(.{
-        .root_source_file =
-            write_files.addCopyFile(output_file, "src/gen/data.zig"),
+        .root_source_file = write_files.addCopyFile(output_file, "src/gen/data.zig"),
     });
     unicode_data.addImport("unicode_types", unicode_types);
 
@@ -51,7 +50,7 @@ pub fn build(b: *std.Build) void {
     const run_exe = b.addRunArtifact(exe);
     if (b.args) |args| {
         run_exe.addArgs(args);
-    }   
+    }
     const run_step = b.step("run", "Run iotac compiler");
     run_step.dependOn(&run_exe.step);
 

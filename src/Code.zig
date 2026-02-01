@@ -69,7 +69,7 @@ fn lineAndColumn(code: Self, at: Offset) std.meta.Tuple(&.{ usize, usize }) {
         }
     }
 
-    std.log.err("offset: {d} in text (length = {d})", .{at, code.text.len});
+    std.log.err("offset: {d} in text (length = {d})", .{ at, code.text.len });
     @panic("offset out of range");
 }
 
@@ -77,9 +77,10 @@ fn lineText(code: Self, line: usize) []const u8 {
     const start = code.lines[line];
     const end = if (line == code.lines.len - 1)
         code.text.len - 1
-    else code.lines[line + 1];
+    else
+        code.lines[line + 1];
     // end - 1 as we don't want to include the '\n' itself
-    return code.text[start..end - 1];
+    return code.text[start .. end - 1];
 }
 
 pub fn raise(code: Self, w: *Io.Writer, at: Offset, comptime fmt: []const u8, args: anytype) !void {
