@@ -5,6 +5,8 @@ const log = std.log;
 
 const Code = @import("Code.zig");
 const Lexer = @import("Lexer.zig");
+const Ast = @import("Ast.zig");
+const node = @import("node.zig");
 const GeneralContext = @import("GeneralContext.zig");
 
 const Cli = struct {
@@ -64,4 +66,9 @@ pub fn main() !void {
     }) {
         std.debug.print("{any}\n", .{tok});
     }
+
+    var ast = Ast.init(&lexer);
+    defer ast.deinit();
+
+    _ = try ast.add(node.VarDecl{ .binding = .{ .handle = 0 } }, 0, .{ .position = 30 });
 }

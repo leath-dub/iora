@@ -86,7 +86,7 @@ pub fn lineText(code: Self, line: usize) []const u8 {
     else
         // minus 1 as we don't want to include the '\n' itself
         code.lines[line + 1] - 1;
-    return code.text[start .. end];
+    return code.text[start..end];
 }
 
 pub fn raise(code: Self, w: *Io.Writer, at: Offset, comptime fmt: []const u8, args: anytype) !void {

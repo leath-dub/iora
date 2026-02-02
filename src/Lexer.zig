@@ -892,8 +892,6 @@ test "integer lexing" {
     try t.expectIntLit("0xBadFace", 0xbadface, null);
     try t.expectIntLit("0xBad_Face", 0xbadface, null);
     try t.expectIntLit("0x_67_7a_2f_cc_40_c6", 0x677a2fcc40c6, null);
-    // try t.expectIntLit("170141183460469231731687303715884105727", 170141183460469231731687303715884105727, null);
-    // try t.expectIntLit("170141183_460469_231731_687303_715884_105727", 170141183460469231731687303715884105727, null);
 }
 
 test "floating point lexing" {
