@@ -70,5 +70,7 @@ pub fn main() !void {
     var ast = Ast.init(&lexer);
     defer ast.deinit();
 
-    _ = try ast.add(node.VarDecl{ .binding = .{ .handle = 0 } }, 0, .{ .position = 30 });
+    // _ = try ast.add(node.VarDecl{ .binding = .{ .handle = 0 } }, 0, .{ .position = 30 });
+    const ref = try ast.startNode(node.VarDecl{ .binding = .{ .handle = 0 } });
+    defer ast.endNode(ref.handle);
 }

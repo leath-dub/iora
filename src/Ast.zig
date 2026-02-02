@@ -44,18 +44,91 @@ pub fn set(ast: *Ast, comptime attr: SideTables.Attachment, of: node.Handle, val
     }
 }
 
-// NOTE: the expectation is that this function is called in pre-order while
+// NOTE: the expectation is that these functions are called in pre-order while
 // parsing. This allows for walking the tree in both post and pre order without
 // needing some auxillery structure - only need to keep track of how many children
 // each node has.
-pub fn add(ast: *Ast, value: anytype, child_count: u16, data: SideTables.Required) !node.Ref(@TypeOf(value)) {
+pub fn startNode(ast: *Ast, value: anytype) !node.Ref(@TypeOf(value)) {
     const handle: node.Handle = @intCast(ast.storage.items.len);
-    try ast.storage.append(ast.ctx.allocator, .{ .node = @unionInit(Node, @tagName(TypeTag(@TypeOf(value))), value), .child_count = child_count });
-    // Set any required data attachments (non hash map data attachments)
-    inline for (comptime meta.tags(meta.FieldEnum(SideTables.Required))) |required_tag| {
-        try ast.set(required_tag, handle, @field(data, @tagName(required_tag)));
-    }
+    try ast.storage.append(ast.ctx.allocator, .{ .node = @unionInit(Node, @tagName(TypeTag(@TypeOf(value))), value), .skip = 0 });
     return .{ .handle = handle };
+}
+
+pub fn endNode(ast: *Ast, handle: node.Handle) void {
+    ast.storage.items[handle].skip = @intCast(ast.storage.items.len - handle);
+}
+
+// pub fn add(ast: *Ast, value: anytype, child_count: u16, data: SideTables.Required) !node.Ref(@TypeOf(value)) {
+//     // Set any required data attachments (non hash map data attachments)
+//     inline for (comptime meta.tags(meta.FieldEnum(SideTables.Required))) |required_tag| {
+//         try ast.set(required_tag, handle, @field(data, @tagName(required_tag)));
+//     }
+//     return .{ .handle = handle };
+// }
+
+pub const PreOrderWalker = struct {
+    enter: fn (*PreOrderWalker, Node) void,
+};
+
+pub const PostOrderWalker = struct {
+    exit: fn (*PostOrderWalker, Node) void,
+};
+
+pub fn walkPreOrder(ast: Ast, walker: *PreOrderWalker) void {
+    for (ast.storage.items) |n| {
+        walker.enter(walker, n.node);
+    }
+}
+
+pub fn walkPostOrder(ast: Ast, walker: *PostOrderWalker) !void {
+    var pending = std.ArrayList(node.Handle).initCapacity(ast.ctx.allocator, 256);
+    defer pending.deinit(ast.ctx.allocator);
+
+    const nodes = ast.storage.items;
+
+    var i: usize = 0;
+    while (i < nodes.len or pending.items.len > 0) {
+        if (i < nodes.len) {
+            try pending.append(ast.ctx.allocator, i);
+            i += 1;
+        }
+
+        while (pending.items.len > 0) {
+            const top = pending.items[pending.items.len - 1];
+            if (i < top + nodes[top].skip) {
+                // Subtree not exausted as 'i' is still less than skip of
+                // the pending node
+                break;
+            }
+            walker.exit(walker, nodes[pending.pop().?].node);
+        }
+    }
+}
+
+pub fn walk(ast: Ast, pre: *PreOrderWalker, post: *PostOrderWalker) !void {
+    var pending = std.ArrayList(node.Handle).initCapacity(ast.ctx.allocator, 256);
+    defer pending.deinit(ast.ctx.allocator);
+
+    const nodes = ast.storage.items;
+
+    var i: usize = 0;
+    while (i < nodes.len or pending.items.len > 0) {
+        if (i < nodes.len) {
+            pre.enter(pre, nodes[i].node);
+            try pending.append(ast.ctx.allocator, i);
+            i += 1;
+        }
+
+        while (pending.items.len > 0) {
+            const top = pending.items[pending.items.len - 1];
+            if (i < top + nodes[top].skip) {
+                // Subtree not exausted as 'i' is still less than skip of
+                // the pending node
+                break;
+            }
+            post.exit(post, nodes[pending.pop().?].node);
+        }
+    }
 }
 
 pub const SideTables = struct {
@@ -180,10 +253,9 @@ const Node = blk: {
 
 const NodeEntry = struct {
     node: Node,
-    // We could store this is in a side table, however since it is read while
-    // traversing it is likely better to keep it here for cache locality
-    // reasons. Would have to measure this.
-    child_count: u16,
+    // This stores how many nodes you need to skip to get the sibling of this
+    // node
+    skip: u16,
 };
 
 const NodeTag = meta.FieldEnum(Node);
