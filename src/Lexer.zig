@@ -57,7 +57,7 @@ pub const TokenType = enum {
     inc,
     dec,
     arrow,
-    rune_lit,
+    char_lit,
     string_lit,
     int_lit,
     float_lit,
@@ -133,6 +133,11 @@ pub const IntLit = struct {
     suffix: ?Code.Offset = null,
 };
 
+pub const CharLit = u32;
+pub const StringLit = struct {
+    inner_text: []const u8,
+};
+
 pub const FloatLit = struct {
     const LexFlag = enum {
         int,
@@ -152,6 +157,7 @@ pub const FloatLit = struct {
 pub const Lit = union(enum) {
     int: IntLit,
     float: FloatLit,
+    char: CharLit,
 };
 
 pub const Token = struct {
@@ -246,10 +252,10 @@ fn illegalToken(l: *Lexer) Token {
     if (0x21 <= illegal and illegal <= 0x7e) {
         // It is in the printable range of ascii characters, raise error formatting
         // it as a {c}
-        l.code.raise(l.ctx.error_out, l.cursor, "illegal character '{c}'", .{illegal}) catch unreachable;
+        l.raise(l.cursor, "illegal character '{c}'", .{illegal});
     } else {
         // Print as hex otherwise
-        l.code.raise(l.ctx.error_out, l.cursor, "illegal character 0x{x}", .{illegal}) catch unreachable;
+        l.raise(l.cursor, "illegal character 0x{x}", .{illegal});
     }
     return l.token(.illegal, 1);
 }
@@ -318,6 +324,8 @@ pub fn peek(l: *Lexer) Token {
             '=' => l.token(.minus_equal, 2),
             else => l.token(.minus, 1),
         },
+        '\'' => l.lexChar() catch l.token(.invalid, 1),
+        '\"' => l.lexString() catch l.token(.invalid, 1),
         '0'...'9' => l.lexFloat() catch l.lexInt() catch l.token(.invalid, 1),
         else => out: {
             const ident = l.lexIdent();
@@ -340,6 +348,107 @@ pub fn consume(l: *Lexer) void {
 }
 
 const LexError = error{LexFailed};
+
+const EscapeContext = enum {
+    char,
+    string,
+};
+
+fn raise(l: *Lexer, offset: usize, comptime fmt: []const u8, args: anytype) void {
+    l.code.raise(l.ctx.error_out, offset, fmt, args) catch unreachable;
+}
+
+fn lexHexBytes(l: *Lexer, offset: usize, count: u8) LexError!Digits {
+    var digits = std.mem.zeroes(Digits);
+    var shift: usize = 1;
+    while (shift <= count and digits.incorporateHexDigit(l.scan(offset + shift) orelse '\x00')) : (shift += 1) {}
+    if (shift != count + 1) {
+        l.raise(offset + shift, "character is not a valid hexidecimal digit", .{});
+        return error.LexFailed;
+    }
+    return digits;
+}
+
+fn singleByteEscape(l: Lexer, ctx: EscapeContext, offset: usize) ?u32 {
+    return switch (l.scan(offset) orelse '\x00') {
+        '0' => 0,
+        'a' => 0x0007,
+        'b' => 0x0008,
+        'f' => 0x000C,
+        'n' => '\n',
+        'r' => '\r',
+        't' => '\t',
+        'v' => 0x000B,
+        '\\' => '\\',
+        '\'' => if (ctx == .char) '\'' else null,
+        '\"' => if (ctx == .string) '\"' else null,
+        else => null,
+    };
+}
+
+fn lexCharUnit(l: *Lexer, ctx: EscapeContext, offset_: usize) LexError!std.meta.Tuple(&.{ u32, u8 }) {
+    var offset = offset_;
+    switch (l.scan(offset) orelse '\x00') {
+        '\\' => {
+            offset += 1;
+            if (l.singleByteEscape(ctx, offset)) |val| {
+                return .{ val, 2 };
+            } else {
+                const bytes: ?u8 = switch (l.scan(offset) orelse '\x00') {
+                    'x' => 2,
+                    'u' => 4,
+                    'U' => 8,
+                    else => null,
+                };
+                if (bytes) |bs| {
+                    return .{ @intCast((try l.lexHexBytes(offset, bs)).value), bs + 2 };
+                } else {
+                    l.raise(l.cursor + offset, "invalid escape character", .{});
+                    return error.LexFailed;
+                }
+            }
+        },
+        '\'' => {
+            l.raise(l.cursor + offset, "empty character literal", .{});
+            return error.LexFailed;
+        },
+        '\n' => {
+            l.raise(l.cursor + offset, "character literal cannot contain '\\n' (line-break)", .{});
+            return error.LexFailed;
+        },
+        else => |value| {
+            return .{ value, 1 };
+        },
+    }
+}
+
+fn lexChar(l: *Lexer) LexError!Token {
+    var offset: usize = 1;
+    const value, const len = try l.lexCharUnit(.char, offset);
+    offset += len;
+    if (!l.ahead_n('\'', offset)) {
+        l.raise(l.cursor + offset, "expected closing \' (single-quote)", .{});
+        return error.LexFailed;
+    }
+    return l.tokenLit(.char_lit, offset + 1, .{ .char = value });
+}
+
+// TODO: support multiline strings and combining strings (e.g. "foo" "bar" == "foobar")
+fn lexString(l: *Lexer) LexError!Token {
+    var offset: usize = 1;
+    _, var len = l.lexCharUnit(.string, offset) catch .{ 0, 1 };
+    while (!l.ahead_n('"', offset) and l.scan(offset) != null) {
+        _, len = l.lexCharUnit(.string, offset) catch .{ 0, 1 };
+        offset += len;
+    }
+    if (l.scan(offset) == null) {
+        l.raise(l.cursor, "unmatched \" (double-quote)", .{});
+        // Delimit the quote by the end of line and move on
+        const line, const column = l.code.lineAndColumn(l.cursor);
+        return l.token(.string_lit, l.code.lineText(line).len - column);
+    }
+    return l.token(.string_lit, offset + 1);
+}
 
 const Digits = struct {
     len: usize,
@@ -616,7 +725,7 @@ fn lexDigits(l: *Lexer, comptime base: Base, start: usize) LexError!Digits {
 
     if (digits.overflow) {
         const offset = l.cursor + start;
-        l.code.raise(l.ctx.error_out, offset, "number '{s}' is too large to be stored as u64", .{l.code.text[offset..][0..digits.len]}) catch unreachable;
+        l.raise(offset, "number '{s}' is too large to be stored as u64", .{l.code.text[offset..][0..digits.len]});
     }
 
     return digits;
@@ -743,6 +852,23 @@ const LexerTest = struct {
         try std.testing.expectEqual(float_lit, tok.lit.?.float);
     }
 
+    pub fn expectCharLit(t: *LexerTest, text: []const u8, char_lit: CharLit) !void {
+        var lexer = Lexer.init(&t.gc, &t.syntax, try .init(&t.syntax, "<test input>", text));
+        const tok = lexer.peek();
+        try std.testing.expectEqual(.char_lit, tok.type);
+        try std.testing.expect(tok.lit != null);
+        try std.testing.expectEqual(.char, @as(std.meta.Tag(Lit), tok.lit.?));
+        try std.testing.expectEqual(char_lit, tok.lit.?.char);
+    }
+
+    pub fn expectStringLit(t: *LexerTest, text: []const u8) !void {
+        var lexer = Lexer.init(&t.gc, &t.syntax, try .init(&t.syntax, "<test input>", text));
+        const tok = lexer.peek();
+        try std.testing.expectEqual(.string_lit, tok.type);
+        try std.testing.expect(tok.lit == null);
+        try std.testing.expectEqualSlices(u8, tok.span, text);
+    }
+
     pub fn expectTokenTypes(t: *LexerTest, text: []const u8, types: []const TokenType) !void {
         var lexer = Lexer.init(&t.gc, &t.syntax, try .init(&t.syntax, "<test input>", text));
         for (types) |ty| {
@@ -797,6 +923,65 @@ test "floating point lexing" {
     try t.expectTokenTypes("0x.p1", &.{ .invalid, .ident, .dot, .ident, .int_lit });
     try t.expectTokenTypes("0X.0", &.{ .int_lit, .ident, .float_lit });
     try t.expectTokenTypes("0x1.5e-2", &.{ .int_lit, .float_lit }); // 0x1, .5e-2
+}
+
+test "character literal lexing" {
+    var t: LexerTest = undefined;
+    t.setUp();
+    defer t.tearDown();
+
+    // Test all ascii characters first
+    for (0..256) |ch_| {
+        const ch: u8 = @intCast(ch_);
+        var buf: [4]u8 = undefined;
+        var input: []const u8 = undefined;
+
+        if (ch_ == '\\' or ch_ == '\'') {
+            input = try std.fmt.bufPrint(&buf, "'\\{c}'", .{ch});
+        } else {
+            input = try std.fmt.bufPrint(&buf, "'{c}'", .{ch});
+        }
+
+        if (ch == '\n') {
+            // '\n' is not allowed
+            continue;
+        }
+
+        try t.expectCharLit(input, ch);
+    }
+
+    try t.expectCharLit("'\\0'", 0);
+    try t.expectCharLit("'\\a'", 0x0007);
+    try t.expectCharLit("'\\b'", 0x0008);
+    try t.expectCharLit("'\\f'", 0x000C);
+    try t.expectCharLit("'\\n'", '\n');
+    try t.expectCharLit("'\\r'", '\r');
+    try t.expectCharLit("'\\t'", '\t');
+    try t.expectCharLit("'\\v'", 0x000B);
+    try t.expectCharLit("'\\\\'", '\\');
+    try t.expectCharLit("'\\''", '\'');
+
+    try t.expectCharLit("'\\xff'", 0xFF);
+    try t.expectCharLit("'\\u0007'", 0x0007);
+    try t.expectCharLit("'\\U0007FFA0'", 0x0007FFA0);
+}
+
+test "string literal lexing" {
+    var t: LexerTest = undefined;
+    t.setUp();
+    defer t.tearDown();
+
+    try t.expectStringLit(
+        \\"foo bar baz"
+    );
+
+    try t.expectStringLit(
+        \\"foo \a \n"
+    );
+
+    try t.expectStringLit(
+        \\" jsdfj    23 9823\U0007FFA089428773 ^#&^&$^#*%"
+    );
 }
 
 // test "fuzz test" {

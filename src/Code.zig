@@ -51,7 +51,13 @@ inline fn lineHasOffset(code: Self, line: usize, at: Offset) bool {
     return code.lines[line] <= at and at < code.lines[line + 1];
 }
 
-fn lineAndColumn(code: Self, at: Offset) std.meta.Tuple(&.{ usize, usize }) {
+pub fn lineAndColumn(code: Self, at: Offset) std.meta.Tuple(&.{ usize, usize }) {
+    // if 'at' is out of range it means we want to point at EOF
+    if (at >= code.text.len) {
+        const last_line = code.lines.len - 1;
+        return .{ last_line, code.text.len - code.lines[last_line] };
+    }
+
     var low: usize = 0;
     var high = code.lines.len - 1;
     var middle: usize = undefined;
@@ -73,14 +79,14 @@ fn lineAndColumn(code: Self, at: Offset) std.meta.Tuple(&.{ usize, usize }) {
     @panic("offset out of range");
 }
 
-fn lineText(code: Self, line: usize) []const u8 {
+pub fn lineText(code: Self, line: usize) []const u8 {
     const start = code.lines[line];
     const end = if (line == code.lines.len - 1)
-        code.text.len - 1
+        code.text.len
     else
-        code.lines[line + 1];
-    // end - 1 as we don't want to include the '\n' itself
-    return code.text[start .. end - 1];
+        // minus 1 as we don't want to include the '\n' itself
+        code.lines[line + 1] - 1;
+    return code.text[start .. end];
 }
 
 pub fn raise(code: Self, w: *Io.Writer, at: Offset, comptime fmt: []const u8, args: anytype) !void {
