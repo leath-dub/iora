@@ -22,7 +22,7 @@ fn parseArgs() error{ParseFailed}!Cli {
     if (args.next()) |file_arg| {
         cli.input_path = file_arg[0..];
     } else {
-        log.err("usage: iotac <file to compile>", .{});
+        log.err("usage: iorac <file to compile>", .{});
         return error.ParseFailed;
     }
 

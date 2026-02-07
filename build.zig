@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
     // _ = write_files.addCopyFile(b.path("src/gen/unicode.zig"), "src/gen/unicode.zig");
 
     const exe = b.addExecutable(.{
-        .name = "iotac",
+        .name = "iorac",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
