@@ -6,6 +6,7 @@ const log = std.log;
 const Code = @import("Code.zig");
 const Lexer = @import("Lexer.zig");
 const Ast = @import("Ast.zig");
+const Parser = @import("Parser.zig");
 const node = @import("node.zig");
 const GeneralContext = @import("GeneralContext.zig");
 
@@ -58,20 +59,9 @@ pub fn main() !void {
     const code = try Code.init(&cst, cli.input_path, try cst.allocator().dupe(u8, text));
     ctx.allocator.free(text);
 
-    var lexer = Lexer.init(&ctx, &cst, code);
-    var tok = lexer.peek();
-    while (tok.type != .eof) : ({
-        lexer.consume();
-        tok = lexer.peek();
-    }) {
-        std.debug.print("{any}\n", .{tok});
-    }
-
-    var ast = Ast.init(&lexer);
+    var parser = Parser.init(&ctx, Lexer.init(&ctx, &cst, code));
+    var ast = parser.parse();
     defer ast.deinit();
 
-    // _ = try ast.add(node.VarDecl{ .binding = .{ .handle = 0 } }, 0, .{ .position = 30 });
-    // const var_decl = try ast.startNode(node.VarDecl);
-    // ast.at(var_decl).ptr.binding = .{ .handle = 0 };
-    // defer ast.endNode(var_decl.handle);
+    std.debug.print("{f}", .{ast});
 }

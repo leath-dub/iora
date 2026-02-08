@@ -24,44 +24,17 @@ pub fn Access(comptime N: type) type {
     };
 }
 
-// pub const SourceFile = struct {};
-// pub const Decls = struct {};
-// pub const Decl = struct {};
-//
-// pub const VarDecl = struct {
-//     binding: Ref(Binding),
-//     // init_expr: ?Ref(Expr),
-// };
-//
-// pub const Binding = struct {
-//     keyword: Token, // let or var
-//     ident: Ref(Ident),
-//     type: ?Ref(Type),
-//
-//     pub fn mutable(b: @This()) bool {
-//         return b.keyword.type == .kw_var;
-//     }
-// };
-//
-// pub const Ident = struct {
-//     token: Token,
-// };
-//
-// pub const Type = struct {};
-
-    // USE(SourceFile, SOURCE_FILE, source_file)                  \
-
 pub const SourceFile = struct {
     imports: Ref(Imports),
     decls: Ref(Decls),
 };
 
 pub const Decls = struct {
-    pub const child = .{ .decl };
+    pub const child = .{.decl};
 };
 
 pub const Imports = struct {
-    pub const child = .{ .import };
+    pub const child = .{.import};
 };
 
 pub const Decl = struct {
@@ -91,7 +64,7 @@ pub const FunDecl = struct {
 };
 
 pub const FunParams = struct {
-    pub const child = .{ .fun_param };
+    pub const child = .{.fun_param};
 };
 
 pub const FunParam = struct {
@@ -148,7 +121,7 @@ pub const SumTypeAlt = struct {
 };
 
 pub const EnumType = struct {
-    pub const child = .{ .ident };
+    pub const child = .{.ident};
 };
 
 pub const PtrType = struct {
@@ -157,7 +130,7 @@ pub const PtrType = struct {
 };
 
 pub const ErrType = struct {
-    pub const child = .{ .type };
+    pub const child = .{.type};
 };
 
 pub const Ident = struct {
@@ -165,7 +138,7 @@ pub const Ident = struct {
 };
 
 pub const ScopedIdent = struct {
-    pub const child = .{ .ident };
+    pub const child = .{.ident};
 };
 
 pub const Stmt = struct {
@@ -211,7 +184,7 @@ pub const CaseStmt = struct {
 };
 
 pub const CaseBranches = struct {
-    pub const child = .{ .case_branch };
+    pub const child = .{.case_branch};
 };
 
 pub const CaseBranch = struct {
@@ -236,15 +209,15 @@ pub const CaseBinding = struct {
 pub const CaseDefault = struct {};
 
 pub const ReturnStmt = struct {
-    pub const child = .{ .expr };
+    pub const child = .{.expr};
 };
 
 pub const DeferStmt = struct {
-    pub const child = .{ .stmt };
+    pub const child = .{.stmt};
 };
 
 pub const CompStmt = struct {
-    pub const child = .{ .stmt };
+    pub const child = .{.stmt};
 };
 
 pub const Expr = struct {
@@ -301,7 +274,7 @@ pub const AnonCallExpr = struct {
 };
 
 pub const CallExprArgs = struct {
-    pub const child = .{ .call_arg };
+    pub const child = .{.call_arg};
 };
 
 pub const CallExprArg = struct {

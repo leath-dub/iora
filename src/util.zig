@@ -34,7 +34,7 @@ pub fn AutoHashMapUnmanagedKVTuple(comptime T: type) ?std.meta.Tuple(&.{ type, t
 pub fn isAutoHashMapUnmanaged(comptime T: type) bool {
     if (AutoHashMapUnmanagedKVTuple(T)) |r| {
         const K, const V = r;
-        return T == std.AutoArrayHashMapUnmanaged(K, V);
+        return T == std.AutoHashMapUnmanaged(K, V);
     }
     return false;
 }

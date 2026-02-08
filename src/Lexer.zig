@@ -96,6 +96,7 @@ pub const TokenType = enum {
     kw_false,
     kw_extern,
     kw_local,
+    kw_import,
 };
 
 const Keyword = en: {
@@ -171,6 +172,14 @@ pub const Token = struct {
     }
     pub fn after(t: Token, code: Code) usize {
         return t.offset(code) + t.span.len;
+    }
+
+    pub fn format(t: Token, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        const name = @tagName(t.type);
+        try w.print("{s}", .{name});
+        if (t.lit != null) {
+            try w.print("({s})", .{t.span});
+        }
     }
 };
 
@@ -284,7 +293,8 @@ pub fn peek(l: *Lexer) Token {
         }
     }
     if (l.cursor >= l.code.text.len) {
-        return l.token(.eof, 0);
+        l.cache = l.token(.eof, 0);
+        return l.cache.?;
     }
 
     l.cache = switch (l.current()) {
@@ -793,6 +803,10 @@ fn lexIdent(l: *Lexer) Token {
             break;
         }
     }
+    if (runes.text.len == 0) {
+        // reached eof, increment runes.consumed
+        runes.consumed += 1;
+    }
 
     var tok = Token{ .type = .ident, .span = l.code.text[l.cursor..][0 .. runes.consumed - 1] };
     // Allow trailing ' in identifier
@@ -877,6 +891,14 @@ const LexerTest = struct {
             lexer.consume();
         }
     }
+
+    pub fn expectTokenTypes2(t: *LexerTest, text: []const u8, types: []const TokenType) !void {
+        var lexer = Lexer.init(&t.gc, &t.syntax, try .init(&t.syntax, "<test input>", text));
+        for (types) |ty| {
+            try std.testing.expectEqual(ty, lexer.peek().type);
+            lexer.consume();
+        }
+    }
 };
 
 test "integer lexing" {
@@ -919,7 +941,7 @@ test "floating point lexing" {
 
     // Negative test cases
     try t.expectTokenTypes("0x15e-2", &.{ .int_lit, .minus, .int_lit });
-    try t.expectTokenTypes("0x.p1", &.{ .invalid, .ident, .dot, .ident, .int_lit });
+    try t.expectTokenTypes("0x.p1", &.{ .invalid, .ident, .dot, .ident });
     try t.expectTokenTypes("0X.0", &.{ .int_lit, .ident, .float_lit });
     try t.expectTokenTypes("0x1.5e-2", &.{ .int_lit, .float_lit }); // 0x1, .5e-2
 }
@@ -1000,6 +1022,16 @@ test "unicode identifier lexing" {
         .equal,
         .int_lit,
     });
+}
+
+test "EOF produced" {
+    var t: LexerTest = undefined;
+    t.setUp();
+    defer t.tearDown();
+
+    try t.expectTokenTypes2("foo", &.{ .ident, .eof });
+    try t.expectTokenTypes2("foo", &.{ .ident, .eof, .eof });
+    try t.expectTokenTypes2("", &.{ .eof, .eof });
 }
 
 // test "fuzz test" {

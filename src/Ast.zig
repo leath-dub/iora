@@ -1,7 +1,5 @@
 const std = @import("std");
 const util = @import("util.zig");
-const Lexer = @import("Lexer.zig");
-const Token = Lexer.Token;
 const Code = @import("Code.zig");
 const node = @import("node.zig");
 const GeneralContext = @import("GeneralContext.zig");
@@ -11,14 +9,12 @@ const mem = std.mem;
 const Ast = @This();
 
 ctx: *GeneralContext,
-lexer: *Lexer,
 side_tables: SideTables = .{},
 storage: std.ArrayList(NodeEntry) = .{},
 
-pub fn init(lexer: *Lexer) Ast {
+pub fn init(ctx: *GeneralContext) Ast {
     return .{
-        .ctx = lexer.ctx,
-        .lexer = lexer,
+        .ctx = ctx,
     };
 }
 
@@ -40,7 +36,7 @@ pub fn set(ast: *Ast, comptime attr: SideTables.Attachment, of: node.Handle, val
     if (comptime util.isArrayList(T)) {
         try @field(ast.side_tables, @tagName(attr)).insert(ast.ctx.allocator, of, value);
     } else {
-        try @field(ast.side_tables, @tagName(attr)).put(of, ast.ctx.allocator, value);
+        try @field(ast.side_tables, @tagName(attr)).put(ast.ctx.allocator, of, value);
     }
 }
 
@@ -49,6 +45,17 @@ pub fn at(ast: *Ast, ref: anytype) node.Access(node.Deref(@TypeOf(ref))) {
         .ptr = &@field(ast.storage.items[ref.handle].node, @tagName(TypeTag(node.Deref(@TypeOf(ref))))),
         .handle = ref.handle,
     };
+}
+
+pub fn atIndex(ast: *Ast, handle: node.Handle) node.Access(Node) {
+    return .{
+        .ptr = &ast.storage.items[handle].node,
+        .handle = handle,
+    };
+}
+
+pub fn entry(ast: Ast, handle: node.Handle) NodeEntry {
+    return ast.storage.items[handle];
 }
 
 // NOTE: the expectation is that these functions are called in pre-order while
@@ -74,20 +81,20 @@ pub fn endNode(ast: *Ast, handle: node.Handle) void {
 // }
 
 pub const PreOrderWalker = struct {
-    enter: fn (*PreOrderWalker, node.Access(Node)) void,
+    enter: *const fn (*PreOrderWalker, node.Access(Node)) void,
 };
 
 pub const PostOrderWalker = struct {
-    exit: fn (*PostOrderWalker, node.Access(Node)) void,
+    exit: *const fn (*PostOrderWalker, node.Access(Node)) void,
 };
 
-pub fn walkPreOrder(ast: Ast, walker: *PreOrderWalker) void {
+pub fn walkPreOrder(ast: *Ast, walker: *PreOrderWalker) void {
     for (0..ast.storage.items.len) |i| {
-        walker.enter(walker, ast.at(i));
+        walker.enter(walker, ast.atIndex(i));
     }
 }
 
-pub fn walkPostOrder(ast: Ast, walker: *PostOrderWalker) !void {
+pub fn walkPostOrder(ast: *Ast, walker: *PostOrderWalker) !void {
     var pending = std.ArrayList(node.Handle).initCapacity(ast.ctx.allocator, 256);
     defer pending.deinit(ast.ctx.allocator);
 
@@ -107,21 +114,21 @@ pub fn walkPostOrder(ast: Ast, walker: *PostOrderWalker) !void {
                 // the pending node
                 break;
             }
-            walker.exit(walker, ast.at(pending.pop().?));
+            walker.exit(walker, ast.atIndex(pending.pop().?));
         }
     }
 }
 
-pub fn walk(ast: Ast, pre: *PreOrderWalker, post: *PostOrderWalker) !void {
-    var pending = std.ArrayList(node.Handle).initCapacity(ast.ctx.allocator, 256);
+pub fn walk(ast: *Ast, pre: *PreOrderWalker, post: *PostOrderWalker) !void {
+    var pending = try std.ArrayList(node.Handle).initCapacity(ast.ctx.allocator, 256);
     defer pending.deinit(ast.ctx.allocator);
 
     const nodes = ast.storage.items;
 
-    var i: usize = 0;
+    var i: u32 = 0;
     while (i < nodes.len or pending.items.len > 0) {
         if (i < nodes.len) {
-            pre.enter(pre, ast.at(i));
+            pre.enter(pre, ast.atIndex(i));
             try pending.append(ast.ctx.allocator, i);
             i += 1;
         }
@@ -133,7 +140,7 @@ pub fn walk(ast: Ast, pre: *PreOrderWalker, post: *PostOrderWalker) !void {
                 // the pending node
                 break;
             }
-            post.exit(post, ast.at(pending.pop().?));
+            post.exit(post, ast.atIndex(pending.pop().?));
         }
     }
 }
@@ -141,6 +148,7 @@ pub fn walk(ast: Ast, pre: *PreOrderWalker, post: *PostOrderWalker) !void {
 pub const SideTables = struct {
     pub const Attachment = meta.FieldEnum(SideTables);
 
+    dirty: std.AutoHashMapUnmanaged(node.Handle, bool) = .{},
     position: std.ArrayList(Code.Offset) = .{},
 
     pub fn Data(comptime attr: meta.FieldEnum(@This())) type {
@@ -189,7 +197,7 @@ pub const SideTables = struct {
         // Make sure all the fields are either ArrayList or AutoHashMapUnmanaged
         for (meta.fields(@This())) |field| {
             if (util.isAutoHashMapUnmanaged(field.type)) {
-                const K, _ = util.AutoHashMapUnmanagedKVTuple(field.type);
+                const K, _ = util.AutoHashMapUnmanagedKVTuple(field.type).?;
                 if (K != node.Handle) {
                     @compileError("all side table hash maps must be keyed by 'NodeRef'");
                 }
@@ -223,6 +231,7 @@ fn comptimeSnakeCase(comptime text: []const u8) meta.Tuple(&.{ [text.len * 2 + 1
 // Automatically construct sum type from all the AST nodes defined in node.zig
 const Node = blk: {
     var fields: [meta.declarations(node).len]std.builtin.Type.UnionField = undefined;
+    var alts: [fields.len]std.builtin.Type.EnumField = undefined;
 
     var node_count: usize = 0;
     for (meta.declarations(node)) |decl| {
@@ -234,6 +243,10 @@ const Node = blk: {
                 .name = @ptrCast(data[0..len]),
                 .type = T,
                 .alignment = @alignOf(T),
+            };
+            alts[node_count] = .{
+                .name = @ptrCast(data[0..len]),
+                .value = node_count,
             };
             node_count += 1;
         }
@@ -248,10 +261,19 @@ const Node = blk: {
         @compileError(msg);
     }
 
+    const _Tag = @Type(.{
+        .@"enum" = .{
+            .tag_type = u32,
+            .fields = alts[0..node_count],
+            .decls = &.{},
+            .is_exhaustive = true,
+        },
+    });
+
     break :blk @Type(.{
         .@"union" = .{
             .layout = .auto,
-            .tag_type = null,
+            .tag_type = _Tag,
             .fields = fields[0..node_count],
             .decls = &.{},
         },
@@ -281,4 +303,88 @@ fn TypeTag(comptime T: type) NodeTag {
         @compileLog(T);
         @compileError("type is not a AST node");
     }
+}
+
+// Outputs Ast in a form like so:
+// foo
+// |- bar
+// |  \- baz
+// |     \- doo
+// \- bil
+//    \- bob
+const Dumper = struct {
+    ast: *const Ast,
+    allocator: std.mem.Allocator,
+    parent_stack: std.ArrayList(node.Handle) = .{},
+    is_last_stack: std.ArrayList(bool) = .{},
+    writer: *std.Io.Writer,
+    pre_walker: PreOrderWalker = .{ .enter = &enter },
+    post_walker: PostOrderWalker = .{ .exit = &exit },
+
+    fn deinit(d: *Dumper) void {
+        d.parent_stack.deinit(d.allocator);
+        d.is_last_stack.deinit(d.allocator);
+    }
+
+    fn isLastSibling(d: *Dumper, h: node.Handle) bool {
+        if (d.parent_stack.items.len == 0) {
+            return false;
+        }
+        const parent = d.parent_stack.items[d.parent_stack.items.len - 1];
+        return parent + d.ast.entry(parent).skip ==
+            h + d.ast.entry(h).skip;
+    }
+
+    fn nodeName(n: *Node) []const u8 {
+        return switch (meta.activeTag(n.*)) {
+            inline else => |tag| @tagName(tag),
+        };
+    }
+
+    fn enter(walker: *PreOrderWalker, n: node.Access(Node)) void {
+        var d: *Dumper = @fieldParentPtr("pre_walker", walker);
+        if (d.is_last_stack.items.len == 0) {
+            d.writer.print("{s}\n", .{nodeName(n.ptr)}) catch unreachable;
+            d.parent_stack.append(d.allocator, n.handle) catch unreachable;
+            d.is_last_stack.append(d.allocator, true) catch unreachable;
+            return;
+        }
+
+        for (d.is_last_stack.items[1..]) |is_last| {
+            if (is_last) {
+                d.writer.print("   ", .{}) catch unreachable;
+            } else {
+                d.writer.print("|  ", .{}) catch unreachable;
+            }
+        }
+
+        const is_last = d.isLastSibling(n.handle);
+        if (d.is_last_stack.items.len > 0) {
+            if (is_last) {
+                d.writer.print("\\- ", .{}) catch unreachable;
+            } else {
+                d.writer.print("|- ", .{}) catch unreachable;
+            }
+        }
+
+        d.writer.print("{s}\n", .{nodeName(n.ptr)}) catch unreachable;
+
+        d.parent_stack.append(d.allocator, n.handle) catch unreachable;
+        d.is_last_stack.append(d.allocator, is_last) catch unreachable;
+    }
+
+    fn exit(walker: *PostOrderWalker, _: node.Access(Node)) void {
+        var d: *Dumper = @fieldParentPtr("post_walker", walker);
+        _ = d.parent_stack.pop();
+        _ = d.is_last_stack.pop();
+    }
+};
+
+pub fn format(_ast: Ast, w: *std.Io.Writer) std.Io.Writer.Error!void {
+    var ast = _ast;
+    var dumper = Dumper{ .ast = &ast, .allocator = ast.ctx.allocator, .writer = w };
+    defer dumper.deinit();
+    ast.walk(&dumper.pre_walker, &dumper.post_walker) catch return error.WriteFailed;
+    // Assert that the ast was not modified when dumping
+    std.debug.assert(std.mem.eql(u8, std.mem.asBytes(&ast), std.mem.asBytes(&_ast)));
 }
