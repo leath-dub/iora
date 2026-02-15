@@ -50,6 +50,7 @@ pub const Import = struct {
 };
 
 pub const VarDecl = struct {
+    declarator: Token,
     name: Ref(Ident),
     type: ?Ref(Type),
     init_expr: ?Ref(Expr),
@@ -101,9 +102,13 @@ pub const CollType = struct {
     value_type: Ref(Type),
 };
 
-pub const TupleType = struct {};
+pub const TupleType = struct {
+    pub const child = .{ .type };
+};
 
-pub const StructType = struct {};
+pub const StructType = struct {
+    pub const child = .{ .struct_field };
+};
 
 pub const StructField = struct {
     name: Ref(Ident),
@@ -111,7 +116,9 @@ pub const StructField = struct {
     default: ?Ref(Expr),
 };
 
-pub const SumType = struct {};
+pub const SumType = struct {
+    pub const child = .{ .sum_type_alt };
+};
 
 pub const SumTypeAlt = struct {
     pub const child = .{
@@ -131,6 +138,12 @@ pub const PtrType = struct {
 
 pub const ErrType = struct {
     pub const child = .{.type};
+};
+
+pub const FunType = struct {
+    params: Ref(FunParams),
+    return_type: ?Ref(Type),
+    is_local: bool,
 };
 
 pub const Ident = struct {
@@ -307,4 +320,4 @@ pub const FieldAccessExpr = struct {
 // This is used so we don't accidently introduce a new ast node into this file.
 // If you actually want to add an ast node, be sure to increment this number
 // to curb the compilation errors.
-pub const ast_node_count: usize = 53;
+pub const ast_node_count: usize = 54;

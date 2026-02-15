@@ -3,6 +3,7 @@ const util = @import("util.zig");
 const Code = @import("Code.zig");
 const node = @import("node.zig");
 const GeneralContext = @import("GeneralContext.zig");
+const Token = @import("Lexer.zig").Token;
 const meta = std.meta;
 const mem = std.mem;
 
@@ -80,21 +81,13 @@ pub fn endNode(ast: *Ast, handle: node.Handle) void {
 //     return .{ .handle = handle };
 // }
 
-pub const PreOrderWalker = struct {
-    enter: *const fn (*PreOrderWalker, node.Access(Node)) void,
-};
-
-pub const PostOrderWalker = struct {
-    exit: *const fn (*PostOrderWalker, node.Access(Node)) void,
-};
-
-pub fn walkPreOrder(ast: *Ast, walker: *PreOrderWalker) void {
+pub fn walkPreOrder(ast: *Ast, walker: anytype) void {
     for (0..ast.storage.items.len) |i| {
-        walker.enter(walker, ast.atIndex(i));
+        walker.enter(ast.atIndex(i));
     }
 }
 
-pub fn walkPostOrder(ast: *Ast, walker: *PostOrderWalker) !void {
+pub fn walkPostOrder(ast: *Ast, walker: anytype) !void {
     var pending = std.ArrayList(node.Handle).initCapacity(ast.ctx.allocator, 256);
     defer pending.deinit(ast.ctx.allocator);
 
@@ -114,12 +107,12 @@ pub fn walkPostOrder(ast: *Ast, walker: *PostOrderWalker) !void {
                 // the pending node
                 break;
             }
-            walker.exit(walker, ast.atIndex(pending.pop().?));
+            walker.exit(ast.atIndex(pending.pop().?));
         }
     }
 }
 
-pub fn walk(ast: *Ast, pre: *PreOrderWalker, post: *PostOrderWalker) !void {
+pub fn walk(ast: *Ast, walker: anytype) !void {
     var pending = try std.ArrayList(node.Handle).initCapacity(ast.ctx.allocator, 256);
     defer pending.deinit(ast.ctx.allocator);
 
@@ -128,7 +121,7 @@ pub fn walk(ast: *Ast, pre: *PreOrderWalker, post: *PostOrderWalker) !void {
     var i: u32 = 0;
     while (i < nodes.len or pending.items.len > 0) {
         if (i < nodes.len) {
-            pre.enter(pre, ast.atIndex(i));
+            walker.enter(ast.atIndex(i));
             try pending.append(ast.ctx.allocator, i);
             i += 1;
         }
@@ -140,7 +133,7 @@ pub fn walk(ast: *Ast, pre: *PreOrderWalker, post: *PostOrderWalker) !void {
                 // the pending node
                 break;
             }
-            post.exit(post, ast.atIndex(pending.pop().?));
+            walker.exit(ast.atIndex(pending.pop().?));
         }
     }
 }
@@ -280,7 +273,7 @@ const Node = blk: {
     });
 };
 
-const NodeEntry = struct {
+pub const NodeEntry = struct {
     node: Node,
     // This stores how many nodes you need to skip to get the sibling of this
     // node
@@ -318,8 +311,6 @@ const Dumper = struct {
     parent_stack: std.ArrayList(node.Handle) = .{},
     is_last_stack: std.ArrayList(bool) = .{},
     writer: *std.Io.Writer,
-    pre_walker: PreOrderWalker = .{ .enter = &enter },
-    post_walker: PostOrderWalker = .{ .exit = &exit },
 
     fn deinit(d: *Dumper) void {
         d.parent_stack.deinit(d.allocator);
@@ -341,10 +332,23 @@ const Dumper = struct {
         };
     }
 
-    fn enter(walker: *PreOrderWalker, n: node.Access(Node)) void {
-        var d: *Dumper = @fieldParentPtr("pre_walker", walker);
+    fn printNode(d: *Dumper, n: node.Access(Node)) void {
+        d.writer.print("{s}", .{nodeName(n.ptr)}) catch unreachable;
+        switch (n.ptr.*) {
+            inline else => |conc_n| {
+                inline for (meta.fields(@TypeOf(conc_n))) |f| {
+                    if (f.type == Token) {
+                        d.writer.print(" {s}=`{s}`", .{f.name, @field(conc_n, f.name).span}) catch unreachable;
+                    }
+                }
+            },
+        }
+        d.writer.writeByte('\n') catch unreachable;
+    }
+
+    fn enter(d: *Dumper, n: node.Access(Node)) void {
         if (d.is_last_stack.items.len == 0) {
-            d.writer.print("{s}\n", .{nodeName(n.ptr)}) catch unreachable;
+            d.printNode(n);
             d.parent_stack.append(d.allocator, n.handle) catch unreachable;
             d.is_last_stack.append(d.allocator, true) catch unreachable;
             return;
@@ -367,14 +371,13 @@ const Dumper = struct {
             }
         }
 
-        d.writer.print("{s}\n", .{nodeName(n.ptr)}) catch unreachable;
+        d.printNode(n);
 
         d.parent_stack.append(d.allocator, n.handle) catch unreachable;
         d.is_last_stack.append(d.allocator, is_last) catch unreachable;
     }
 
-    fn exit(walker: *PostOrderWalker, _: node.Access(Node)) void {
-        var d: *Dumper = @fieldParentPtr("post_walker", walker);
+    fn exit(d: *Dumper, _: node.Access(Node)) void {
         _ = d.parent_stack.pop();
         _ = d.is_last_stack.pop();
     }
@@ -384,7 +387,7 @@ pub fn format(_ast: Ast, w: *std.Io.Writer) std.Io.Writer.Error!void {
     var ast = _ast;
     var dumper = Dumper{ .ast = &ast, .allocator = ast.ctx.allocator, .writer = w };
     defer dumper.deinit();
-    ast.walk(&dumper.pre_walker, &dumper.post_walker) catch return error.WriteFailed;
+    ast.walk(&dumper) catch return error.WriteFailed;
     // Assert that the ast was not modified when dumping
     std.debug.assert(std.mem.eql(u8, std.mem.asBytes(&ast), std.mem.asBytes(&_ast)));
 }
