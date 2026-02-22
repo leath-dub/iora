@@ -103,7 +103,7 @@ pub const CollType = struct {
 };
 
 pub const TupleType = struct {
-    pub const child = .{.type, .type_decl};
+    pub const child = .{ .type, .type_decl };
 };
 
 pub const StructType = struct {
@@ -117,7 +117,7 @@ pub const StructField = struct {
 };
 
 pub const SumType = struct {
-    pub const child = .{.type, .type_decl};
+    pub const child = .{ .type, .type_decl };
 };
 
 pub const EnumType = struct {
@@ -245,11 +245,8 @@ pub const AtomExpr = struct {
         .token_expr,
         .builtin_type,
         .scoped_ident,
-        .unit_expr,
     };
 };
-
-pub const UnitExpr = struct {};
 
 pub const TokenExpr = struct {
     token: Token,
@@ -285,7 +282,7 @@ pub const ParenExpr = struct {
 };
 
 pub const CallExprArgs = struct {
-    pub const child = .{.labelled_expr, .expr};
+    pub const child = .{ .labelled_expr, .expr };
 };
 
 pub const LabelledExpr = struct {
@@ -318,4 +315,4 @@ pub const FieldAccessExpr = struct {
 // This is used so we don't accidently introduce a new ast node into this file.
 // If you actually want to add an ast node, be sure to increment this number
 // to curb the compilation errors.
-pub const ast_node_count: usize = 54;
+pub const ast_node_count: usize = 53;

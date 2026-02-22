@@ -204,13 +204,13 @@ pub const NodeEntry = struct {
     skip: u16,
 };
 
-const NodeTag = meta.FieldEnum(Node);
+pub const NodeTag = meta.FieldEnum(Node);
 
-fn TagType(comptime tag: NodeTag) type {
+pub fn TagType(comptime tag: NodeTag) type {
     return @FieldType(Node, @tagName(tag));
 }
 
-fn TypeTag(comptime T: type) NodeTag {
+pub fn TypeTag(comptime T: type) NodeTag {
     comptime {
         for (meta.fields(Node)) |nf| {
             if (T == nf.type) {

@@ -109,7 +109,7 @@ fn parse_var_decl(p: *Parser) node.Ref(node.VarDecl) {
 
     if (p.on(.equal)) {
         _ = p.next();
-        task.set(p, .init_expr, p.parse_expr());
+        // task.set(p, .init_expr, p.parse_expr());
     }
 
     _ = p.skipIf(.semicolon);
@@ -397,12 +397,32 @@ fn subparse_tuple_type(p: *Parser, task: ParseTask(Ast.Node)) node.Ref(node.Tupl
     return node.Ref(node.TupleType){ .handle = task.output.handle };
 }
 
-fn parse_expr(p: *Parser) node.Ref(node.Expr) {
-    const left = p.startTask(node.Expr);
-    defer p.endTask(left);
+fn parse_factor(p: *Parser) node.Ref(node.Expr) {
+    const task = p.startTask(node.Expr);
+    defer p.endTask(task);
     _ = p.parse_atom_expr();
-    return left.output;
+    return task.output;
 }
+
+// fn parse_factor(p: *Parser) node.Ref(node.Expr) {
+//     const task = p.startTask(node.Expr);
+//     defer p.endTask(task);
+//     switch (p.at().type) {
+//         .amper,
+//         .inc,
+//         .dec,
+//         .star,
+//         .minus,
+//         .bang => {
+//             const unary = p.startTask(node.UnaryExpr);
+//             defer p.endTask(unary);
+//             unary.set(p, .op, p.munch());
+//             unary.set(p, .operand, p.parse_factor());
+//         },
+//         else => _ = p.parse_atom_expr(),
+//     }
+//     return task.output;
+// }
 
 fn parse_atom_expr(p: *Parser) node.Ref(node.AtomExpr) {
     const task = p.startTask(node.AtomExpr);
@@ -410,36 +430,41 @@ fn parse_atom_expr(p: *Parser) node.Ref(node.AtomExpr) {
 
     again: switch (p.at().type) {
         .lparen => _ = p.parse_paren_or_anon_call_expr(),
-        .char_lit,
-        .string_lit,
-        .int_lit,
-        .float_lit,
-        .kw_true,
-        .kw_false => {
+        .char_lit, .string_lit, .int_lit, .float_lit, .kw_true, .kw_false => {
             const expr = p.startTask(node.TokenExpr);
             defer p.endTask(expr);
             expr.set(p, .token, p.munch());
         },
-        .kw_u8,
-        .kw_s8,
-        .kw_u16,
-        .kw_s16,
-        .kw_u32,
-        .kw_s32,
-        .kw_u64,
-        .kw_s64,
-        .kw_f32,
-        .kw_f64,
-        .kw_bool,
-        .kw_unit,
-        .kw_string => {
+        .kw_u8, .kw_s8, .kw_u16, .kw_s16, .kw_u32, .kw_s32, .kw_u64, .kw_s64, .kw_f32, .kw_f64, .kw_bool, .kw_unit, .kw_string => {
             const ty = p.startTask(node.BuiltinType);
             defer p.endTask(ty);
             ty.set(p, .token, p.munch());
         },
-        .scope,
-        .ident => _ = p.parse_scoped_ident(),
-        else => if (p.expectOneOf(.{ .lparen, .char_lit, .string_lit, .int_lit, .float_lit, .kw_true, .kw_false, .kw_u8, .kw_s8, .kw_u16, .kw_s16, .kw_u32, .kw_s32, .kw_u64, .kw_s64, .kw_f32, .kw_f64, .kw_bool, .kw_unit, .kw_string, .scope, .ident, })) {
+        .scope, .ident => _ = p.parse_scoped_ident(),
+        else => if (p.expectOneOf(.{
+            .lparen,
+            .char_lit,
+            .string_lit,
+            .int_lit,
+            .float_lit,
+            .kw_true,
+            .kw_false,
+            .kw_u8,
+            .kw_s8,
+            .kw_u16,
+            .kw_s16,
+            .kw_u32,
+            .kw_s32,
+            .kw_u64,
+            .kw_s64,
+            .kw_f32,
+            .kw_f64,
+            .kw_bool,
+            .kw_unit,
+            .kw_string,
+            .scope,
+            .ident,
+        })) {
             continue :again p.at().type;
         },
     }
@@ -455,9 +480,8 @@ fn parse_paren_or_anon_call_expr(p: *Parser) void {
 
     if (!p.skipIf(.lparen)) return;
     if (p.on(.rparen)) {
-        // If just (), it means unit value literal
         _ = p.next();
-        p.ast.atIndex(task.output.handle).ptr.* = .{ .unit_expr = .{} };
+        p.ast.atIndex(task.output.handle).ptr.* = .{ .anon_call_expr = .{} };
         return;
     }
 
@@ -528,6 +552,10 @@ fn ParseTask(comptime N: type) type {
 
         pub fn set(t: @This(), p: *Parser, comptime field: meta.FieldEnum(N), value: anytype) void {
             @field(t.ptr(p), @tagName(field)) = value;
+        }
+
+        pub fn reify(t: @This(), p: *Parser, value: anytype) void {
+            p.ast.atIndex(t.output.handle).ptr.* = @unionInit(Ast.Node, @tagName(Ast.TypeTag(@TypeOf(value))), value);
         }
 
         fn ptr(t: @This(), p: *Parser) *N {

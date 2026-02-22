@@ -309,6 +309,7 @@ pub fn peek(l: *Lexer) Token {
         '?' => l.token(.qmark, 1),
         ',' => l.token(.comma, 1),
         '`' => l.token(.btick, 1),
+        '&' => l.token(.amper, 1),
         '!' => if (l.ahead('=')) l.token(.not_equal, 2) else l.token(.bang, 1),
         '*' => if (l.ahead('=')) l.token(.star_equal, 2) else l.token(.star, 1),
         ':' => if (l.ahead(':')) l.token(.scope, 2) else l.token(.colon, 1),
