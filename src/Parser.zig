@@ -126,7 +126,7 @@ fn parse_type_decl(p: *Parser) node.Ref(node.TypeDecl) {
     if (!p.skipIf(.equal)) return task.output;
     task.set(p, .type, p.parse_type());
     if (!p.skipIf(.semicolon)) return task.output;
-    return task.output; 
+    return task.output;
 }
 
 fn parse_ident(p: *Parser) node.Ref(node.Ident) {
@@ -163,7 +163,7 @@ fn parse_type(p: *Parser) node.Ref(node.Type) {
         .star => _ = p.parse_ptr_type(),
         .kw_fun => _ = p.parse_fun_type(),
         .scope, .ident => _ = p.parse_scoped_ident(),
-        // .lparen => p.parse_tuple_or_sum_type(),
+        .lparen => _ = p.parse_tuple_or_sum_type(),
         else => if (p.expectOneOf(.{
             .kw_s8,
             .kw_u8,
@@ -334,70 +334,66 @@ fn empty_ident(p: *Parser) node.Ref(node.Ident) {
     return task.output;
 }
 
-// fn parse_tuple_or_sum_type(p: *Parser) node.Ref(Ast.Node) {
-//     // Create a task to no concreate AST node. Subparse steps can reify this
-//     // to the appropriate type once it is unambiguous.
-//     const task = p.startTask(Ast.Node);
-//     defer p.endTask(task);
-//
-//     if (!p.skipIf(.lparen)) return task.output;
-//     if (p.on(.kw_type)) {
-//         const td = p.parse_type_decl();
-//         _ = p.subparse_sum_type(task, td.handle);
-//         return task.output;
-//     }
-//
-//     const t = p.parse_type();
-//     again: switch (p.at().type) {
-//         // You can't have a union of single type so this is interpreted
-//         // as a tuple
-//         .comma, .rparen => p.subparse_tuple_type(task),
-//         .pipe => p.subparse_sum_type(task, t.handle),
-//         else => if (p.expectOneOf(.{ .comma, .rparen, .pipe })) {
-//             continue :again p.at().type;
-//         },
-//     }
-// }
-//
-// fn subparse_sum_type(p: *Parser, task: ParseTask(Ast.Node), first_type: node.Handle) node.Ref(node.SumType) {
-//     p.reparent_by(first_type, node.SumTypeAlt);
-//     while (p.on(.pipe)) {
-//         _ = p.next();
-//         _ = p.parse_sum_type_alt();
-//     }
-//     p.ast.atIndex(task.output.handle).ptr.* = .{ .sum_type = {} };
-//     return node.Ref(node.SumType) { .handle = task.output.handle };
-// }
-//
-// fn subparse_tuple_type(p: *Parser, task: ParseTask(Ast.Node)) node.Ref(node.TupleType) {
-//     while (p.on(.comma)) {
-//         _ = p.next();
-//         _ = p.parse_type();
-//     }
-//     p.ast.atIndex(task.output.handle).ptr.* = .{ .sum_type = {} };
-//     return node.Ref(node.SumType) { .handle = task.output.handle };
-// }
+fn parse_type_or_inline_decl(p: *Parser) node.Ref(node.TypeOrInlineDecl) {
+    const task = p.startTask(node.TypeOrInlineDecl);
+    defer p.endTask(task);
+    switch (p.at().type) {
+        .kw_type => _ = p.parse_type_decl(),
+        else => _ = p.parse_type(),
+    }
+    return task.output;
+}
 
-// Move the subtree starting at 'subtree' to be a child of its next sibling.
-// fn move_under_sibling(p: *Parser, subtree_parent: node.Handle, subtree: node.Handle) void {
-//     const sibling = subtree + p.ast.entry(subtree).skip;
-//     const has_sibling = sibling !=
-//         (subtree_parent + p.ast.entry(subtree_parent).skip);
-//     assert(has_sibling);
-//
-//     // So as not to need to move any references after, for now we just assert
-//     // that the siblings subtree does not have anything after it
-//     assert(sibling + p.ast.entry(sibling).skip >= p.ast.storage.items.len);
-//
-//     // TODO: need algorithm that will work at rotating the side table
-//     // hash maps
-//
-//     // Rotate node storage slice which contains the subtree + sibling
-//     // to the left by subtree skip to "swap" the subtree and sibling.
-//     std.mem.rotate(Ast.NodeEntry, span, p.ast.entry(subtree).skip);
-// }
+fn parse_tuple_or_sum_type(p: *Parser) node.Ref(Ast.Node) {
+    // Create a task to no concreate AST node. Subparse steps can reify this
+    // to the appropriate type once it is unambiguous.
+    const task = p.startTask(Ast.Node);
+    defer p.endTask(task);
 
-// fn parse_fun_decl(p: *Parser) node.Ref(node.FunDecl) {}
+    if (!p.skipIf(.lparen)) return task.output;
+
+    // Both tuples and sum types share the same first child.
+    // Parse it so we are looking at either ')', '|' or ','.
+    _ = p.parse_type_or_inline_decl();
+
+    again: switch (p.at().type) {
+        // You can't have a union of single type so this is interpreted
+        // as a tuple
+        .comma, .rparen => _ = p.subparse_tuple_type(task),
+        .pipe => _ = p.subparse_sum_type(task),
+        else => if (p.expectOneOf(.{ .comma, .rparen, .pipe })) {
+            continue :again p.at().type;
+        },
+    }
+
+    if (!p.skipIf(.rparen)) return task.output;
+
+    return task.output;
+}
+
+fn subparse_sum_type(p: *Parser, task: ParseTask(Ast.Node)) node.Ref(node.SumType) {
+    while (p.on(.pipe)) {
+        _ = p.next();
+        if (p.on(.rparen)) {
+            break;
+        }
+        _ = p.parse_type_or_inline_decl();
+    }
+    p.ast.atIndex(task.output.handle).ptr.* = .{ .sum_type = .{} };
+    return node.Ref(node.SumType) { .handle = task.output.handle };
+}
+
+fn subparse_tuple_type(p: *Parser, task: ParseTask(Ast.Node)) node.Ref(node.TupleType) {
+    while (p.on(.comma)) {
+        _ = p.next();
+        if (p.on(.rparen)) {
+            break;
+        }
+        _ = p.parse_type_or_inline_decl();
+    }
+    p.ast.atIndex(task.output.handle).ptr.* = .{ .tuple_type = .{} };
+    return node.Ref(node.TupleType) { .handle = task.output.handle };
+}
 
 // TODO: have expression parsing in a separate file as it is so distinct to the
 // normal recursive decent parser. In fact it may be a good idea to build the
@@ -424,6 +420,7 @@ fn startTask(p: *Parser, comptime N: type) ParseTask(N) {
     const n = p.ast.startNode(N) catch unreachable;
     const parent = p.parsing;
     p.parsing = n.handle;
+    p.ast.entry(p.parsing.?).position = p.lexer.cursor;
     return .{
         .parent = parent,
         .output = n,
@@ -436,7 +433,7 @@ fn endTask(p: *Parser, task: anytype) void {
 }
 
 fn raiseExpect(p: *Parser, expected: []const u8) void {
-    p.ast.set(.dirty, p.parsing.?, true) catch unreachable;
+    p.ast.entry(p.parsing.?).dirty = true;
     p.lexer.code.raise(p.ctx.error_out, p.lexer.cursor, "expected {s} got {f}", .{ expected, p.lexer.peek() }) catch unreachable;
 }
 

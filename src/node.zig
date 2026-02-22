@@ -103,11 +103,11 @@ pub const CollType = struct {
 };
 
 pub const TupleType = struct {
-    pub const child = .{ .type };
+    pub const child = .{.type_or_inline_decl};
 };
 
 pub const StructType = struct {
-    pub const child = .{ .struct_field };
+    pub const child = .{.struct_field};
 };
 
 pub const StructField = struct {
@@ -117,10 +117,10 @@ pub const StructField = struct {
 };
 
 pub const SumType = struct {
-    pub const child = .{ .sum_type_alt };
+    pub const child = .{.type_or_inline_decl};
 };
 
-pub const SumTypeAlt = struct {
+pub const TypeOrInlineDecl = struct {
     pub const child = .{
         .type,
         .type_decl,

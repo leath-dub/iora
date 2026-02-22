@@ -10,7 +10,6 @@ const mem = std.mem;
 const Ast = @This();
 
 ctx: *GeneralContext,
-side_tables: SideTables = .{},
 storage: std.ArrayList(NodeEntry) = .{},
 
 pub fn init(ctx: *GeneralContext) Ast {
@@ -20,25 +19,7 @@ pub fn init(ctx: *GeneralContext) Ast {
 }
 
 pub fn deinit(ast: *Ast) void {
-    ast.side_tables.deinit(ast.ctx.allocator);
     ast.storage.deinit(ast.ctx.allocator);
-}
-
-pub fn get(ast: Ast, comptime attr: SideTables.Attachment, of: node.Handle) SideTables.Data(attr) {
-    const T = @FieldType(SideTables, @tagName(attr));
-    if (comptime util.isArrayList(T)) {
-        return @field(ast.side_tables, @tagName(attr)).items[of];
-    }
-    return @field(ast.side_tables, @tagName(attr)).get(of);
-}
-
-pub fn set(ast: *Ast, comptime attr: SideTables.Attachment, of: node.Handle, value: util.Unwrap(SideTables.Data(attr))) !void {
-    const T = @FieldType(SideTables, @tagName(attr));
-    if (comptime util.isArrayList(T)) {
-        try @field(ast.side_tables, @tagName(attr)).insert(ast.ctx.allocator, of, value);
-    } else {
-        try @field(ast.side_tables, @tagName(attr)).put(ast.ctx.allocator, of, value);
-    }
 }
 
 pub fn at(ast: *Ast, ref: anytype) node.Access(node.Deref(@TypeOf(ref))) {
@@ -55,8 +36,12 @@ pub fn atIndex(ast: *Ast, handle: node.Handle) node.Access(Node) {
     };
 }
 
-pub fn entry(ast: Ast, handle: node.Handle) NodeEntry {
+pub fn entryConst(ast: Ast, handle: node.Handle) NodeEntry {
     return ast.storage.items[handle];
+}
+
+pub fn entry(ast: *Ast, handle: node.Handle) *NodeEntry {
+    return &ast.storage.items[handle];
 }
 
 // NOTE: the expectation is that these functions are called in pre-order while
@@ -65,21 +50,23 @@ pub fn entry(ast: Ast, handle: node.Handle) NodeEntry {
 // each node has.
 pub fn startNode(ast: *Ast, comptime N: type) !node.Ref(N) {
     const handle: node.Handle = @intCast(ast.storage.items.len);
-    try ast.storage.append(ast.ctx.allocator, .{ .node = @unionInit(Node, @tagName(TypeTag(N)), mem.zeroes(N)), .skip = 0 });
+    if (N == Node) {
+        try ast.storage.append(ast.ctx.allocator, .{
+            .node = undefined,
+            .skip = 0,
+        });
+    } else {
+        try ast.storage.append(ast.ctx.allocator, .{
+            .node = @unionInit(Node, @tagName(TypeTag(N)), mem.zeroes(N)),
+            .skip = 0,
+        });
+    }
     return .{ .handle = handle };
 }
 
 pub fn endNode(ast: *Ast, handle: node.Handle) void {
     ast.storage.items[handle].skip = @intCast(ast.storage.items.len - handle);
 }
-
-// pub fn add(ast: *Ast, value: anytype, child_count: u16, data: SideTables.Required) !node.Ref(@TypeOf(value)) {
-//     // Set any required data attachments (non hash map data attachments)
-//     inline for (comptime meta.tags(meta.FieldEnum(SideTables.Required))) |required_tag| {
-//         try ast.set(required_tag, handle, @field(data, @tagName(required_tag)));
-//     }
-//     return .{ .handle = handle };
-// }
 
 pub fn walkPreOrder(ast: *Ast, walker: anytype) void {
     for (0..ast.storage.items.len) |i| {
@@ -138,71 +125,6 @@ pub fn walk(ast: *Ast, walker: anytype) !void {
     }
 }
 
-pub const SideTables = struct {
-    pub const Attachment = meta.FieldEnum(SideTables);
-
-    dirty: std.AutoHashMapUnmanaged(node.Handle, bool) = .{},
-    position: std.ArrayList(Code.Offset) = .{},
-
-    pub fn Data(comptime attr: meta.FieldEnum(@This())) type {
-        const T = @FieldType(@This(), @tagName(attr));
-        if (util.isArrayList(T)) {
-            return @typeInfo(T.Slice).pointer.child;
-        }
-        return ?@FieldType(T.KV, "value");
-    }
-
-    pub const Required = required: {
-        const tags = meta.tags(Attachment);
-        var fields: [tags.len]std.builtin.Type.StructField = undefined;
-        var write: usize = 0;
-
-        for (tags) |tag| {
-            if (@typeInfo(Data(tag)) != .optional) {
-                fields[write] = .{
-                    .name = @tagName(tag),
-                    .type = Data(tag),
-                    .default_value_ptr = &mem.zeroes(Data(tag)),
-                    .is_comptime = false,
-                    .alignment = @alignOf(Data(tag)),
-                };
-                write += 1;
-            }
-        }
-
-        break :required @Type(.{
-            .@"struct" = .{
-                .layout = .auto,
-                .fields = fields[0..write],
-                .decls = &.{},
-                .is_tuple = false,
-            },
-        });
-    };
-
-    pub fn deinit(st: *@This(), allocator: mem.Allocator) void {
-        inline for (comptime meta.fieldNames(@This())) |field| {
-            @field(st, field).deinit(allocator);
-        }
-    }
-
-    comptime {
-        // Make sure all the fields are either ArrayList or AutoHashMapUnmanaged
-        for (meta.fields(@This())) |field| {
-            if (util.isAutoHashMapUnmanaged(field.type)) {
-                const K, _ = util.AutoHashMapUnmanagedKVTuple(field.type).?;
-                if (K != node.Handle) {
-                    @compileError("all side table hash maps must be keyed by 'NodeRef'");
-                }
-                continue;
-            }
-            if (!util.isArrayList(field.type)) {
-                @compileError("all side tables should be either 'std.ArrayList' or 'std.AutoHashMapUnmanaged'");
-            }
-        }
-    }
-};
-
 fn comptimeSnakeCase(comptime text: []const u8) meta.Tuple(&.{ [text.len * 2 + 1]u8, usize }) {
     var buf = mem.zeroes([text.len * 2 + 1]u8);
     var write: usize = 0;
@@ -222,7 +144,7 @@ fn comptimeSnakeCase(comptime text: []const u8) meta.Tuple(&.{ [text.len * 2 + 1
 }
 
 // Automatically construct sum type from all the AST nodes defined in node.zig
-const Node = blk: {
+pub const Node = blk: {
     var fields: [meta.declarations(node).len]std.builtin.Type.UnionField = undefined;
     var alts: [fields.len]std.builtin.Type.EnumField = undefined;
 
@@ -275,6 +197,8 @@ const Node = blk: {
 
 pub const NodeEntry = struct {
     node: Node,
+    dirty: bool = false,
+    position: Code.Offset = 0,
     // This stores how many nodes you need to skip to get the sibling of this
     // node
     skip: u16,
@@ -322,8 +246,8 @@ const Dumper = struct {
             return false;
         }
         const parent = d.parent_stack.items[d.parent_stack.items.len - 1];
-        return parent + d.ast.entry(parent).skip ==
-            h + d.ast.entry(h).skip;
+        return parent + d.ast.entryConst(parent).skip ==
+            h + d.ast.entryConst(h).skip;
     }
 
     fn nodeName(n: *Node) []const u8 {
@@ -338,7 +262,7 @@ const Dumper = struct {
             inline else => |conc_n| {
                 inline for (meta.fields(@TypeOf(conc_n))) |f| {
                     if (f.type == Token) {
-                        d.writer.print(" {s}=`{s}`", .{f.name, @field(conc_n, f.name).span}) catch unreachable;
+                        d.writer.print(" {s}=`{s}`", .{ f.name, @field(conc_n, f.name).span }) catch unreachable;
                     }
                 }
             },
