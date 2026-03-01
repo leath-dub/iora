@@ -34,6 +34,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         }),
+        // .use_llvm = true,
     });
 
     const unicode_data = b.createModule(.{

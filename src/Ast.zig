@@ -26,6 +26,9 @@ pub fn deinit(ast: *Ast) void {
 
 // Allocate value on the heap
 pub fn box(ast: *Ast, value: anytype) *@TypeOf(value) {
+    if (@typeInfo(@TypeOf(value)) == .pointer) {
+        @compileError("Can only box value types");
+    }
     const ptr = ast.node_alloc
         .allocator()
         .create(@TypeOf(value)) catch @panic("OOM");
@@ -42,7 +45,8 @@ fn callback(comptime name: []const u8, comptime Item: type, comptime Listener: t
     if (comptime meta.hasMethod(Listener, callback_name)) {
         const Args = meta.ArgsTuple(@TypeOf(@field(Listener, callback_name)));
         if (@FieldType(Args, "0") != *Listener or
-            @FieldType(Args, "1") != *Item) {
+            @FieldType(Args, "1") != *Item)
+        {
             @compileError("function named " ++ callback_name ++ " has invalid argument types");
         }
         @field(Listener, callback_name)(listener, item);
@@ -51,11 +55,11 @@ fn callback(comptime name: []const u8, comptime Item: type, comptime Listener: t
     if (comptime meta.hasMethod(Listener, generic_callback_name)) {
         const Args = meta.ArgsTuple(@TypeOf(@field(Listener, generic_callback_name)));
         if (@FieldType(Args, "0") != *Listener or
-            @FieldType(Args, "1") != Node) {
+            @FieldType(Args, "1") != Node)
+        {
             @compileError("function named " ++ generic_callback_name ++ " has invalid argument types");
         }
-        @field(Listener, generic_callback_name)(
-            listener, @unionInit(Node, @tagName(TypeTag(Item)), item));
+        @field(Listener, generic_callback_name)(listener, @unionInit(Node, @tagName(TypeTag(Item)), item));
     }
 }
 
@@ -69,13 +73,13 @@ fn forEachChild(comptime Item: type, item: *Item, ctx: anytype, handle: anytype)
             const field_ref = &@field(item, field.name);
             switch (@typeInfo(field.type)) {
                 .@"struct" => handle(ctx, field_ref),
-                .@"optional" => if (field_ref.*) |*child| {
+                .optional => if (field_ref.*) |*child| {
                     handle(ctx, child);
                 },
                 .@"union" => switch (field_ref.*) {
                     inline else => |*child| handle(ctx, child),
                 },
-                .@"pointer" => |ptr| switch (ptr.size) {
+                .pointer => |ptr| switch (ptr.size) {
                     .one => handle(ctx, field_ref.*),
                     .slice => for (field_ref.*) |*child| {
                         handle(ctx, child);
@@ -90,8 +94,8 @@ fn forEachChild(comptime Item: type, item: *Item, ctx: anytype, handle: anytype)
 }
 
 pub fn walk(listener: anytype, item: anytype) void {
-    const Item = @typeInfo(@TypeOf(item)).@"pointer".child;
-    const Listener = @typeInfo(@TypeOf(listener)).@"pointer".child;
+    const Item = @typeInfo(@TypeOf(item)).pointer.child;
+    const Listener = @typeInfo(@TypeOf(listener)).pointer.child;
 
     if (comptime isNode(Item)) {
         callback("enter", Item, Listener, item, listener);
@@ -116,17 +120,17 @@ fn getChild(ref: anytype) ?Ast.Node {
         return null;
     }
     return switch (@typeInfo(N)) {
-        .@"struct" =>
-            @unionInit(Ast.Node, @tagName(TypeTag(N)), ref),
+        .@"struct" => @unionInit(Ast.Node, @tagName(TypeTag(N)), ref),
         .@"union" => switch (ref.*) {
+            .dirty => null,
             inline else => |*alt| getChild(alt),
         },
-        .@"pointer" => |ptr| switch (ptr.size) {
+        .pointer => |ptr| switch (ptr.size) {
             .one => getChild(ref.*),
             .slice => if (ref.len > 0) getChild(&ref.*[ref.len - 1]) else null,
             else => null,
         },
-        .@"optional" => if (ref.* != null) getChild(&ref.*.?) else null,
+        .optional => if (ref.* != null) getChild(&ref.*.?) else null,
         else => null,
     };
 }
@@ -145,9 +149,7 @@ pub fn lastChild(item: anytype) ?Ast.Node {
 }
 
 pub fn isNode(comptime T: type) bool {
-    return @typeInfo(T) == .@"struct"
-        and @hasField(T, "head")
-        and @FieldType(T, "head") == node.Head;
+    return @typeInfo(T) == .@"struct" and @hasField(T, "head") and @FieldType(T, "head") == node.Head;
 }
 
 pub const NodeTag = std.meta.FieldEnum(Node);
@@ -214,8 +216,7 @@ pub const Node = blk: {
 
     for (std.meta.declarations(node)) |decl| {
         const T = @field(node, decl.name);
-        if (@TypeOf(T) == type and @typeInfo(T) == .@"struct" and @hasField(T, "head")
-            and @FieldType(T, "head") == node.Head) {
+        if (@TypeOf(T) == type and @typeInfo(T) == .@"struct" and @hasField(T, "head") and @FieldType(T, "head") == node.Head) {
             const data, const len = comptimeSnakeCase(decl.name);
             tags[count] = .{
                 .name = @ptrCast(data[0..len]),
@@ -255,13 +256,6 @@ pub fn getNodeHead(item: Ast.Node) *node.Head {
     };
 }
 
-// Outputs Ast in a form like so:
-// foo
-// |- bar
-// |  \- baz
-// |     \- doo
-// \- bil
-//    \- bob
 pub const Dumper = struct {
     ctx: *GeneralContext,
     is_last: std.DynamicBitSetUnmanaged,
@@ -293,7 +287,7 @@ pub const Dumper = struct {
 
     fn emitAuxData(d: *Dumper, comptime name: []const u8, comptime fmt: []const u8, data: anytype, count: u32) void {
         d.bind(d.writer.writeAll(if (count == 0) "(" else ", "));
-        d.bind(d.writer.print("{s}: " ++ fmt, .{name, data}));
+        d.bind(d.writer.print("{s}: " ++ fmt, .{ name, data }));
     }
 
     fn handleAuxData(d: *Dumper, comptime name: []const u8, comptime T: type, data_ref: anytype, count: u32) bool {
@@ -306,7 +300,7 @@ pub const Dumper = struct {
                 d.emitAuxData(name, "{f}", data_ref.*, count);
                 return true;
             },
-            .@"optional" => if (data_ref.*) |*data| {
+            .optional => if (data_ref.*) |*data| {
                 return d.handleAuxData(name, @TypeOf(data.*), data, count);
             },
             .bool => {

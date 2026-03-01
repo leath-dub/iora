@@ -144,8 +144,8 @@ pub const Ident = struct {
 };
 
 pub const ScopedIdent = struct {
-    head: Head,
-    idents: []Ident,
+    head: Head = .{},
+    idents: []Ident = &.{},
 };
 
 pub const Stmt = union(enum) {
@@ -233,17 +233,13 @@ pub const CompStmt = struct {
 };
 
 pub const Expr = union(enum) {
-    atom: AtomExpr,
     postfix: PostfixExpr,
     call: CallExpr,
     field_access: FieldAccessExpr,
     coll_access: CollAccessExpr,
     unary: UnaryExpr,
     bin: BinExpr,
-    dirty,
-};
-
-pub const AtomExpr = union(enum) {
+    // Atomic expressions
     anon_call_expr: AnonCallExpr,
     token_expr: TokenExpr,
     builtin_type: BuiltinType,
@@ -252,25 +248,25 @@ pub const AtomExpr = union(enum) {
 };
 
 pub const TokenExpr = struct {
-    head: Head,
-    token: Token,
+    head: Head = .{},
+    token: Token = .{},
 };
 
 pub const PostfixExpr = struct {
-    head: Head,
+    head: Head = .{},
     op: Token,
     operand: *Expr,
 };
 
 pub const UnaryExpr = struct {
-    head: Head,
+    head: Head = .{},
     op: Token,
     operand: *Expr,
 };
 
 pub const BinExpr = struct {
-    head: Head,
-    op: Token,
+    head: Head = .{},
+    op: Token = .{},
     left: *Expr,
     right: *Expr,
 };
