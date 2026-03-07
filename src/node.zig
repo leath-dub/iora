@@ -43,19 +43,19 @@ pub const VarDecl = struct {
 };
 
 pub const FunDecl = struct {
-    head: Head,
-    name: ScopedIdent,
-    params: []FunParam,
-    local: bool,
-    return_type: ?Type,
-    body: CompStmt,
+    head: Head = .{},
+    name: ScopedIdent = .{},
+    params: []FunParam = &.{},
+    is_local: bool = false,
+    return_type: ?Type = null,
+    body: CompStmt = .{},
 };
 
 pub const FunParam = struct {
-    head: Head,
-    name: Ident,
-    type: Type,
-    unwrap: bool,
+    head: Head = .{},
+    name: Ident = .{},
+    type: Type = .dirty,
+    unwrap: bool = false,
 };
 
 pub const TypeDecl = struct {
@@ -74,6 +74,7 @@ pub const Type = union(enum) {
     ptr: PtrType,
     err: ErrType,
     fun: FunType,
+    scoped_ident: ScopedIdent,
     dirty,
 };
 
@@ -89,13 +90,13 @@ pub const CollType = struct {
 };
 
 pub const TupleType = struct {
-    head: Head,
-    args: []TypeOrInlineDecl,
+    head: Head = .{},
+    types: []Type = &.{},
 };
 
 pub const SumType = struct {
-    head: Head,
-    args: []TypeOrInlineDecl,
+    head: Head = .{},
+    alts: []TypeOrInlineDecl = &.{},
 };
 
 pub const TypeOrInlineDecl = union(enum) {
@@ -117,25 +118,25 @@ pub const StructField = struct {
 };
 
 pub const EnumType = struct {
-    head: Head,
-    args: []Ident,
+    head: Head = .{},
+    alts: []Ident = &.{},
 };
 
 pub const PtrType = struct {
-    head: Head,
-    referent_type: *Type,
+    head: Head = .{},
+    child: *Type = undefined,
 };
 
 pub const ErrType = struct {
-    head: Head,
-    child: *Type,
+    head: Head = .{},
+    child: *Type = undefined,
 };
 
 pub const FunType = struct {
-    head: Head,
-    params: []FunParam,
-    return_type: ?*Type,
-    is_local: bool,
+    head: Head = .{},
+    is_local: bool = false,
+    params: []FunParam = &.{},
+    return_type: ?*Type = null,
 };
 
 pub const Ident = struct {
@@ -150,32 +151,40 @@ pub const ScopedIdent = struct {
 
 pub const Stmt = union(enum) {
     decl: Decl,
-    if_stmt: IfStmt,
-    while_stmt: WhileStmt,
-    case_stmt: CaseStmt,
-    return_stmt: ReturnStmt,
-    defer_stmt: DeferStmt,
-    comp_stmt: CompStmt,
+    @"if": IfStmt,
+    @"while": WhileStmt,
+    case: CaseStmt,
+    @"return": ReturnStmt,
+    @"defer": DeferStmt,
+    comp: CompStmt,
+    expr: Expr,
+    assign: Assign,
     dirty,
 };
 
+pub const Assign = struct {
+    head: Head = .{},
+    lvalue: Expr = .dirty,
+    rvalue: Expr = .dirty,
+};
+
 pub const IfStmt = struct {
-    head: Head,
-    cond: Cond,
-    then_arm: CompStmt,
-    else_arm: ?Else,
+    head: Head = .{},
+    cond: Cond = .dirty,
+    then_arm: CompStmt = .{},
+    else_arm: ?Else = null,
 };
 
 pub const Else = union(enum) {
-    if_stmt: *IfStmt,
-    comp_stmt: CompStmt,
+    @"if": *IfStmt,
+    comp: CompStmt,
     dirty,
 };
 
 pub const WhileStmt = struct {
-    head: Head,
-    cond: Cond,
-    block: CompStmt,
+    head: Head = .{},
+    cond: Cond = .dirty,
+    body: CompStmt = .{},
 };
 
 pub const Cond = union(enum) {
@@ -185,22 +194,23 @@ pub const Cond = union(enum) {
 };
 
 pub const SumTypeReduce = struct {
-    head: Head,
-    name: Ident,
-    reduction: Type,
-    value: Expr,
+    head: Head = .{},
+    declarator: Token = .{},
+    name: Ident = .{},
+    reduction: Type = .dirty,
+    value: Expr = .dirty,
 };
 
 pub const CaseStmt = struct {
-    head: Head,
-    arg: Expr,
-    branches: []CaseBranch,
+    head: Head = .{},
+    arg: Expr = .dirty,
+    arms: []CaseArm = &.{},
 };
 
-pub const CaseBranch = struct {
-    head: Head,
-    patt: CasePatt,
-    action: Stmt,
+pub const CaseArm = struct {
+    head: Head = .{},
+    patt: CasePatt = .dirty,
+    action: Stmt = .dirty,
 };
 
 pub const CasePatt = union(enum) {
@@ -212,24 +222,25 @@ pub const CasePatt = union(enum) {
 };
 
 pub const CaseBinding = struct {
-    head: Head,
-    name: Ident,
-    type: Type,
+    head: Head = .{},
+    declarator: Token = .{},
+    name: Ident = .{},
+    type: Type = .dirty,
 };
 
 pub const ReturnStmt = struct {
-    head: Head,
-    child: Expr,
+    head: Head = .{},
+    child: Expr = .dirty,
 };
 
 pub const DeferStmt = struct {
-    head: Head,
-    child: Expr,
+    head: Head = .{},
+    child: *Stmt = undefined,
 };
 
 pub const CompStmt = struct {
-    head: Head,
-    stmts: []Stmt,
+    head: Head = .{},
+    stmts: []Stmt = &.{},
 };
 
 pub const Expr = union(enum) {
@@ -272,9 +283,9 @@ pub const BinExpr = struct {
 };
 
 pub const CallExpr = struct {
-    head: Head,
-    callable: *Expr,
-    args: []CallExprArg,
+    head: Head = .{},
+    callable: *Expr = undefined,
+    args: []CallExprArg = &.{},
 };
 
 pub const AnonCallExpr = struct {
@@ -314,6 +325,6 @@ pub const SliceRange = struct {
 
 pub const FieldAccessExpr = struct {
     head: Head = .{},
-    value: *Expr,
-    field: Ident,
+    value: *Expr = undefined,
+    field: Ident = .{},
 };

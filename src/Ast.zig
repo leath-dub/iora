@@ -40,9 +40,17 @@ pub fn own(ast: *Ast, comptime T: type, items: []T) []T {
     return ast.node_alloc.allocator().dupe(T, items) catch @panic("OOM");
 }
 
+fn unqualTypeName(comptime T: type) []const u8 {
+    const qualName = @typeName(T);
+    if (mem.lastIndexOfScalar(u8, qualName, '.')) |index| {
+        return qualName[index + 1 ..];
+    }
+    return qualName;
+}
+
 fn callback(comptime name: []const u8, comptime Item: type, comptime Listener: type, item: *Item, listener: *Listener) ChildDisposition {
     var result: ChildDisposition = .walk;
-    const callback_name = name ++ @typeName(Item);
+    const callback_name = name ++ comptime unqualTypeName(Item);
     if (comptime meta.hasMethod(Listener, callback_name)) {
         const Args = meta.ArgsTuple(@TypeOf(@field(Listener, callback_name)));
         if (@FieldType(Args, "0") != *Listener or
@@ -56,7 +64,7 @@ fn callback(comptime name: []const u8, comptime Item: type, comptime Listener: t
         }
     }
     const generic_callback_name = name;
-    if (comptime meta.hasMethod(Listener, generic_callback_name)) {
+    if (comptime isNode(Item) and meta.hasMethod(Listener, generic_callback_name)) {
         const Args = meta.ArgsTuple(@TypeOf(@field(Listener, generic_callback_name)));
         if (@FieldType(Args, "0") != *Listener or
             @FieldType(Args, "1") != Node)
@@ -68,7 +76,26 @@ fn callback(comptime name: []const u8, comptime Item: type, comptime Listener: t
             result = ret;
         }
     }
-    return result; 
+    return result;
+}
+
+fn handleChild(ctx: anytype, ref: anytype, handle: anytype) void {
+    const T = @typeInfo(@TypeOf(ref)).pointer.child;
+    switch (@typeInfo(T)) {
+        .@"union", .@"struct" => handle(ctx, ref),
+        .optional => if (ref.*) |*child| {
+            handleChild(ctx, child, handle);
+        },
+        .pointer => |ptr| switch (ptr.size) {
+            .one => handleChild(ctx, ref.*, handle),
+            .slice => for (ref.*) |*child| {
+                handleChild(ctx, child, handle);
+            },
+            .many => @compileError("Ast cannot store many pointer (i.e. [*]T)"),
+            .c => @compileError("Ast cannot store c pointer (i.e. [*c]T)"),
+        },
+        else => {}, // TODO: serialize other data with default formatters
+    }
 }
 
 fn forEachChild(comptime Item: type, item: *Item, ctx: anytype, handle: anytype) void {
@@ -79,24 +106,7 @@ fn forEachChild(comptime Item: type, item: *Item, ctx: anytype, handle: anytype)
         const skip = mem.eql(u8, field.name, "head") and field.type == node.Head;
         if (!skip) {
             const field_ref = &@field(item, field.name);
-            switch (@typeInfo(field.type)) {
-                .@"struct" => handle(ctx, field_ref),
-                .optional => if (field_ref.*) |*child| {
-                    handle(ctx, child);
-                },
-                .@"union" => switch (field_ref.*) {
-                    inline else => |*child| handle(ctx, child),
-                },
-                .pointer => |ptr| switch (ptr.size) {
-                    .one => handle(ctx, field_ref.*),
-                    .slice => for (field_ref.*) |*child| {
-                        handle(ctx, child);
-                    },
-                    .many => @compileError("Ast cannot store many pointer (i.e. [*]T)"),
-                    .c => @compileError("Ast cannot store c pointer (i.e. [*c]T)"),
-                },
-                else => {}, // TODO: serialize other data with default formatters
-            }
+            handleChild(ctx, field_ref, handle);
         }
     }
 }
@@ -105,7 +115,7 @@ pub fn walk(listener: anytype, item: anytype) void {
     const Item = @typeInfo(@TypeOf(item)).pointer.child;
     const Listener = @typeInfo(@TypeOf(listener)).pointer.child;
 
-    if (comptime isNode(Item)) {
+    if (comptime isNode(Item) or isSumNode(Item)) {
         if (callback("enter", Item, Listener, item, listener) == .skip) {
             // Skip requested, be sure to call exit handlers
             _ = callback("exit", Item, Listener, item, listener);
@@ -121,7 +131,7 @@ pub fn walk(listener: anytype, item: anytype) void {
         else => {},
     }
 
-    if (comptime isNode(Item)) {
+    if (comptime isNode(Item) or isSumNode(Item)) {
         _ = callback("exit", Item, Listener, item, listener);
     }
 }
@@ -142,7 +152,10 @@ fn getChild(ref: anytype) ?Ast.Node {
             .slice => if (ref.len > 0) getChild(&ref.*[ref.len - 1]) else null,
             else => null,
         },
-        .optional => if (ref.* != null) getChild(&ref.*.?) else null,
+        .optional => if (ref.* != null)
+            getChild(&ref.*.?)
+        else
+            null,
         else => null,
     };
 }
@@ -162,6 +175,15 @@ pub fn lastChild(item: anytype) ?Ast.Node {
 
 pub fn isNode(comptime T: type) bool {
     return @typeInfo(T) == .@"struct" and @hasField(T, "head") and @FieldType(T, "head") == node.Head;
+}
+
+pub fn isSumNode(comptime T: type) bool {
+    if (@typeInfo(T) != .@"union") return false;
+    var has_non_node = false;
+    inline for (std.meta.fields(T)) |alt| {
+        has_non_node = !isNode(alt.type);
+    }
+    return has_non_node;
 }
 
 pub const NodeTag = std.meta.FieldEnum(Node);

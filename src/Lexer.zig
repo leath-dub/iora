@@ -8,116 +8,154 @@ const Code = @import("Code.zig");
 const GeneralContext = @import("GeneralContext.zig");
 const unicode_utils = @import("unicode.zig");
 
-pub const TokenType = enum {
-    eof,
-    synthesized,
-    illegal,
-    invalid,
-    empty,
-    lbracket,
-    rbracket,
-    lparen,
-    rparen,
-    lbrace,
-    rbrace,
-    colon,
-    semicolon,
-    scope,
-    comma,
-    bang,
-    qmark,
-    dot,
-    ddot,
-    plus,
-    plus_equal,
-    minus,
-    minus_equal,
-    btick,
-    star,
-    star_equal,
-    slash,
-    slash_equal,
-    equal,
-    dequal,
-    not_equal,
-    lt,
-    lt_equal,
-    gt,
-    gt_equal,
-    pipe,
-    pipe_equal,
-    amper,
-    amper_equal,
-    carat,
-    carat_equal,
-    perc,
-    perc_equal,
-    lshift,
-    lshift_equal,
-    rshift,
-    rshift_equal,
-    inc,
-    dec,
-    arrow,
-    char_lit,
-    string_lit,
-    int_lit,
-    float_lit,
-    ident,
-    kw_not,
-    kw_and,
-    kw_or,
-    kw_fun,
-    kw_if,
-    kw_while,
-    kw_case,
-    kw_else,
-    kw_for,
-    kw_defer,
-    kw_goto,
-    kw_let,
-    kw_var,
-    kw_def,
-    kw_type,
-    kw_struct,
-    kw_enum,
-    kw_s8,
-    kw_u8,
-    kw_s16,
-    kw_u16,
-    kw_s32,
-    kw_u32,
-    kw_s64,
-    kw_u64,
-    kw_f32,
-    kw_f64,
-    kw_return,
-    kw_string,
-    kw_unit,
-    kw_bool,
-    kw_true,
-    kw_false,
-    kw_extern,
-    kw_local,
-    kw_import,
+const TokenDescriptor = struct {
+    tag: @Type(.enum_literal),
+    keyword: bool = false,
+    description: []const u8,
+
+    fn init(comptime tag: @Type(.enum_literal), description: []const u8) TokenDescriptor {
+        return .{
+            .tag = tag,
+            .description = description,
+        };
+    }
+
+    fn initKeyword(comptime tag: @Type(.enum_literal)) TokenDescriptor {
+        return .{
+            .tag = tag,
+            .keyword = true,
+            .description = "keyword '" ++ @tagName(tag) ++ "'",
+        };
+    }
 };
 
-const Keyword = en: {
-    const field_names = std.meta.fieldNames(TokenType);
+const token_descriptors = [_]TokenDescriptor{
+    TokenDescriptor.init(.eof, "<EOF>"),
+    TokenDescriptor.init(.synthesized, "<synthesized token>"),
+    TokenDescriptor.init(.illegal, "<illegal token>"),
+    TokenDescriptor.init(.invalid, "<invalid token>"),
+    TokenDescriptor.init(.empty, "<empty token>"),
+    TokenDescriptor.init(.lbracket, "'['"),
+    TokenDescriptor.init(.rbracket, "']'"),
+    TokenDescriptor.init(.lparen, "'('"),
+    TokenDescriptor.init(.rparen, "')'"),
+    TokenDescriptor.init(.lbrace, "'{'"),
+    TokenDescriptor.init(.rbrace, "'}'"),
+    TokenDescriptor.init(.colon, "':'"),
+    TokenDescriptor.init(.semicolon, "';'"),
+    TokenDescriptor.init(.scope, "'::'"),
+    TokenDescriptor.init(.comma, "','"),
+    TokenDescriptor.init(.bang, "'!'"),
+    TokenDescriptor.init(.qmark, "'?'"),
+    TokenDescriptor.init(.dot, "'.'"),
+    TokenDescriptor.init(.ddot, "'..'"),
+    TokenDescriptor.init(.plus, "'+'"),
+    TokenDescriptor.init(.plus_equal, "'+='"),
+    TokenDescriptor.init(.minus, "'-'"),
+    TokenDescriptor.init(.minus_equal, "'-='"),
+    TokenDescriptor.init(.btick, "'`'"),
+    TokenDescriptor.init(.star, "'*'"),
+    TokenDescriptor.init(.star_equal, "'*='"),
+    TokenDescriptor.init(.slash, "'/'"),
+    TokenDescriptor.init(.slash_equal, "'/='"),
+    TokenDescriptor.init(.equal, "'='"),
+    TokenDescriptor.init(.dequal, "'=='"),
+    TokenDescriptor.init(.not_equal, "'!='"),
+    TokenDescriptor.init(.lt, "'<'"),
+    TokenDescriptor.init(.lt_equal, "'<='"),
+    TokenDescriptor.init(.gt, "'>'"),
+    TokenDescriptor.init(.gt_equal, "'>='"),
+    TokenDescriptor.init(.pipe, "'|'"),
+    TokenDescriptor.init(.pipe_equal, "'|='"),
+    TokenDescriptor.init(.amper, "'&'"),
+    TokenDescriptor.init(.amper_equal, "'&='"),
+    TokenDescriptor.init(.carat, "'^'"),
+    TokenDescriptor.init(.carat_equal, "'^='"),
+    TokenDescriptor.init(.perc, "'%'"),
+    TokenDescriptor.init(.perc_equal, "'%='"),
+    TokenDescriptor.init(.lshift, "'<<'"),
+    TokenDescriptor.init(.lshift_equal, "'<<='"),
+    TokenDescriptor.init(.rshift, "'>>'"),
+    TokenDescriptor.init(.rshift_equal, "'>>='"),
+    TokenDescriptor.init(.inc, "'++'"),
+    TokenDescriptor.init(.dec, "'--'"),
+    TokenDescriptor.init(.arrow, "'->'"),
+    TokenDescriptor.init(.char_lit, "character literal"),
+    TokenDescriptor.init(.string_lit, "string literal"),
+    TokenDescriptor.init(.int_lit, "integer literal"),
+    TokenDescriptor.init(.float_lit, "floating point literal"),
+    TokenDescriptor.init(.ident, "identifier"),
+    TokenDescriptor.initKeyword(.not),
+    TokenDescriptor.initKeyword(.@"and"),
+    TokenDescriptor.initKeyword(.@"or"),
+    TokenDescriptor.initKeyword(.fun),
+    TokenDescriptor.initKeyword(.@"if"),
+    TokenDescriptor.initKeyword(.@"while"),
+    TokenDescriptor.initKeyword(.case),
+    TokenDescriptor.initKeyword(.@"else"),
+    TokenDescriptor.initKeyword(.@"for"),
+    TokenDescriptor.initKeyword(.@"defer"),
+    TokenDescriptor.initKeyword(.goto),
+    TokenDescriptor.initKeyword(.let),
+    TokenDescriptor.initKeyword(.@"var"),
+    TokenDescriptor.initKeyword(.def),
+    TokenDescriptor.initKeyword(.type),
+    TokenDescriptor.initKeyword(.@"struct"),
+    TokenDescriptor.initKeyword(.@"enum"),
+    TokenDescriptor.initKeyword(.s8),
+    TokenDescriptor.initKeyword(.u8),
+    TokenDescriptor.initKeyword(.s16),
+    TokenDescriptor.initKeyword(.u16),
+    TokenDescriptor.initKeyword(.s32),
+    TokenDescriptor.initKeyword(.u32),
+    TokenDescriptor.initKeyword(.s64),
+    TokenDescriptor.initKeyword(.u64),
+    TokenDescriptor.initKeyword(.f32),
+    TokenDescriptor.initKeyword(.f64),
+    TokenDescriptor.initKeyword(.@"return"),
+    TokenDescriptor.initKeyword(.string),
+    TokenDescriptor.initKeyword(.unit),
+    TokenDescriptor.initKeyword(.bool),
+    TokenDescriptor.initKeyword(.true),
+    TokenDescriptor.initKeyword(.false),
+    TokenDescriptor.initKeyword(.@"extern"),
+    TokenDescriptor.initKeyword(.local),
+    TokenDescriptor.initKeyword(.import),
+};
 
+pub const TokenType = blk: {
     var index: usize = 0;
-    var fields: [field_names.len]std.builtin.Type.EnumField = undefined;
+    var fields: [token_descriptors.len]std.builtin.Type.EnumField = undefined;
 
-    for (std.meta.fieldNames(TokenType)) |tt| {
-        if (std.mem.startsWith(u8, tt, "kw_")) {
-            fields[index] = .{ .name = tt[3..], .value = index };
+    for (token_descriptors) |td| {
+        fields[index] = .{ .name = @tagName(td.tag), .value = index };
+        index += 1;
+    }
+
+    break :blk @Type(.{
+        .@"enum" = .{
+            .tag_type = u8,
+            .decls = &.{},
+            .fields = fields[0..index],
+            .is_exhaustive = true,
+        },
+    });
+};
+
+pub const Keyword = blk: {
+    var index: usize = 0;
+    var fields: [token_descriptors.len]std.builtin.Type.EnumField = undefined;
+
+    for (token_descriptors) |td| {
+        if (td.keyword) {
+            fields[index] = .{ .name = @tagName(td.tag), .value = index };
             index += 1;
         }
     }
 
-    break :en @Type(.{
+    break :blk @Type(.{
         .@"enum" = .{
-            .tag_type = @typeInfo(TokenType).@"enum".tag_type,
+            .tag_type = u8,
             .decls = &.{},
             .fields = fields[0..index],
             .is_exhaustive = true,
@@ -181,6 +219,16 @@ pub const Token = struct {
         try w.print("{s}", .{t.span});
     }
 };
+
+pub fn describeTokenType(tt: TokenType) []const u8 {
+    @setEvalBranchQuota(10000);
+    inline for (token_descriptors) |td| switch (tt) {
+        inline else => |tag| if (tag == td.tag) {
+            return td.description;
+        },
+    };
+    unreachable;
+}
 
 ctx: *GeneralContext,
 code: Code,
@@ -343,7 +391,7 @@ pub fn peek(l: *Lexer) Token {
         else => out: {
             const ident = l.lexIdent();
             const tt_opt = if (std.meta.stringToEnum(Keyword, ident.span)) |kw| switch (kw) {
-                inline else => |tag| @field(TokenType, "kw_" ++ @tagName(tag)),
+                inline else => |tag| @field(TokenType, @tagName(tag)),
             } else null;
             break :out if (tt_opt) |tt|
                 l.token(tt, ident.span.len)
@@ -1011,7 +1059,7 @@ test "unicode identifier lexing" {
     try t.expectTokenTypes("α'", &.{.ident});
 
     try t.expectTokenTypes("let sum_Σ = 10", &.{
-        .kw_let,
+        .let,
         .ident,
         .equal,
         .int_lit,
@@ -1033,7 +1081,7 @@ test "Misc tests" {
     t.setUp();
     defer t.tearDown();
     try t.expectTokenTypes("let _ = 1 + 2/3;", &.{
-        .kw_let,
+        .let,
         .ident,
         .equal,
         .int_lit,
