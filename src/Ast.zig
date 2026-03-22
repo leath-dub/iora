@@ -85,7 +85,7 @@ fn callback(comptime name: []const u8, comptime Item: type, comptime Listener: t
             @compileError("function named " ++ generic_callback_name ++ " has invalid argument types");
         }
         const ret = @field(Listener, generic_callback_name)(listener, @unionInit(Node, @tagName(TypeTag(Item)), item));
-        if (@TypeOf(ret) == ChildDisposition and result != .skip) {
+        if (comptime @TypeOf(ret) == ChildDisposition) {
             result = ret;
         }
     }
@@ -129,7 +129,8 @@ fn forEachChild(comptime Item: type, item: *Item, ctx: anytype, handle: anytype)
         return;
     }
     inline for (meta.fields(Item)) |field| {
-        const skip = mem.eql(u8, field.name, "head") and field.type == node.Head;
+        const skip = (mem.eql(u8, field.name, "head") and field.type == node.Head) or
+            field.name[0] == '_';
         if (!skip) {
             const field_ref = &@field(item, field.name);
             handleChild(ctx, field_ref, handle);

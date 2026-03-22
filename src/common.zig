@@ -33,59 +33,6 @@ pub const ResolveConfig = struct {
     lookup_mode: LookupMode = .lexical,
 };
 
-pub fn resolveScoped(base: *const node.Scope, sid: *node.ScopedIdent, cfg: ResolveConfig) ?node.Symbol {
-    if (sid.resolves_to) |cache| {
-        return cache;
-    }
-
-    var symbol_opt = cfg.symbol;
-    defer sid.resolves_to = symbol_opt;
-
-    var idents = sid.idents;
-    if (sid.isGlobal()) {
-        idents = idents[1..];
-    }
-
-    for (idents) |*id| {
-        if (symbol_opt) |symbol| {
-            again: switch (symbol.data) {
-                .type_decl => |td| {
-                    // First check in the type scope
-                    symbol_opt = resolveLocal(&td.scope, id);
-
-                    // Next check in local sub-scope
-                    if (symbol_opt == null) {
-                        const fallback_scope = switch (td.type) {
-                            .tuple => |*tup| &tup.scope,
-                            .sum => |*sum| &sum.scope,
-                            .@"enum" => |*en| &en.scope,
-                            .scoped_ident => |*sub| blk: {
-                                if (resolveScoped(base, sub, cfg)) |s| {
-                                    continue :again s.data;
-                                }
-                                break :blk null;
-                            },
-                            else => null,
-                        };
-                        if (fallback_scope) |s| {
-                            symbol_opt = resolveLocal(s, id);
-                        }
-                    }
-                },
-                else => {},
-            }
-        } else {
-            // Lexical lookup if we don't have a currently resolved symbol
-            symbol_opt = if (cfg.lookup_mode == .lexical)
-                resolve(base, id)
-            else
-                resolveLocal(base, id);
-        }
-    }
-
-    return symbol_opt;
-}
-
 pub var index_name_buf: [4096]u8 = undefined;
 
 pub fn indexName(buf: []u8, index: usize) []const u8 {

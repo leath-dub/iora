@@ -26,7 +26,7 @@ pub const Store = struct {
 
     // After the top level call to 'intern' we clear the scratch arena. This
     // allows the memory to be valid throughout recursive calls to 'internImpl`
-    fn internImpl(store: *Store, t: *node.Type, reset: bool) !TypeRef {
+    fn internImpl(store: *Store, t: *const node.Type, reset: bool) !TypeRef {
         defer if (reset) {
             _ = store.ctx.scratch.reset(.retain_capacity);
         };
@@ -138,8 +138,17 @@ pub const Store = struct {
                 }
                 return res.id;
             },
-            .scoped_ident => |si| {
-                const resolved = si.resolves_to.?;
+            .ident => |id| {
+                const resolved = id.resolves_to.?;
+                switch (resolved.data) {
+                    .type_decl => |td| return store.internDataStable(.{ .user = td }),
+                    .sub_type => |subt| return store.internImpl(&subt.type, false),
+                    else => {},
+                }
+                unreachable;
+            },
+            .selector => |sel| {
+                const resolved = sel.resolves_to.?;
                 switch (resolved.data) {
                     .type_decl => |td| return store.internDataStable(.{ .user = td }),
                     .sub_type => |subt| return store.internImpl(&subt.type, false),
@@ -151,7 +160,7 @@ pub const Store = struct {
         }
     }
 
-    pub fn intern(store: *Store, t: *node.Type) TypeRef {
+    pub fn intern(store: *Store, t: *const node.Type) TypeRef {
         return store.internImpl(t, true) catch @panic("OOM");
     }
 

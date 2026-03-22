@@ -73,7 +73,7 @@ fn parseFunDecl(p: *Parser) node.FunDecl {
     var fun = p.create(node.FunDecl);
     if (!p.skipIf(.fun)) return err(fun);
     const first = p.parseIdent();
-    if (p.on(.scope)) {
+    if (p.on(.dot)) {
         _ = p.next();
         fun.type_name = first;
         fun.name = p.parseIdent();
@@ -131,7 +131,7 @@ fn createBranchStmt(p: *Parser) node.BranchStmt {
     var branch = p.create(node.BranchStmt);
     branch.action = p.munch();
     if (!p.on(.semicolon)) {
-        branch.label = p.parseIdent();
+        branch.label_name = p.parseIdent();
     }
     if (!p.skipIf(.semicolon)) return err(branch);
     return ok(branch);
@@ -273,7 +273,7 @@ fn parseDefDecl(p: *Parser) node.DefDecl {
     assert(start.type == .def);
 
     const first = p.parseIdent();
-    if (p.on(.scope)) {
+    if (p.on(.dot)) {
         _ = p.next();
         def_decl.type_name = first;
         def_decl.name = p.parseIdent();
@@ -331,16 +331,6 @@ fn parseTypeDecl(p: *Parser, delim: bool) node.TypeDecl {
     return ok(type_decl);
 }
 
-// builtin: BuiltinType,
-// coll: CollType,
-// tuple: TupleType,
-// @"struct": StructType,
-// sum: SumType,
-// @"enum": EnumType,
-// ptr: PtrType,
-// err: ErrType,
-// fun: FunType,
-
 fn parseType(p: *Parser) node.Type {
     return again: switch (p.at().type) {
         .s8,
@@ -361,7 +351,7 @@ fn parseType(p: *Parser) node.Type {
         .@"struct" => .{ .@"struct" = p.parseStructType() },
         .@"enum" => .{ .@"enum" = p.parseEnumType() },
         .lparen => p.parseTupleOrSumType(),
-        .scope, .ident => .{ .scoped_ident = p.parseScopedIdent() },
+        .dot, .ident => p.parseIdentOrSelectorType(),
         .bang => .{ .err = p.parseErrType() },
         .star => .{ .ptr = p.parsePtrType() },
         .fun => .{ .fun = p.parseFunType() },
@@ -383,7 +373,6 @@ fn parseType(p: *Parser) node.Type {
             .@"struct",
             .@"enum",
             .lparen,
-            .scope,
             .ident,
             .bang,
             .star,
@@ -391,6 +380,33 @@ fn parseType(p: *Parser) node.Type {
         }, "a type")) {
             continue :again p.at().type;
         } else .dirty,
+    };
+}
+
+fn parseIdentType(p: *Parser) node.IdentType {
+    var ident = p.create(node.IdentType);
+    ident.is_inferred = p.on(.dot);
+    if (ident.is_inferred) {
+        _ = p.next();
+    }
+    ident.name = p.parseIdent();
+    return ok(ident);
+}
+
+fn parseIdentOrSelectorType(p: *Parser) node.Type {
+    const first = p.parseIdentType();
+    var left: node.IdentOrSelector = .{ .ident = first };
+    while (p.on(.dot)) {
+        _ = p.next();
+        var selector = p.create(node.SelectorType);
+        selector.type = p.ast.box(ok(left));
+        selector.field = p.parseIdent();
+        left = .{ .selector = selector };
+    }
+    return switch (left) {
+        .ident => |id| .{ .ident = ok(id) },
+        .selector => |sel| .{ .selector = ok(sel) },
+        .dirty => .dirty,
     };
 }
 
@@ -648,20 +664,22 @@ fn parseUnaryGroup(p: *Parser) node.Expr {
 }
 
 fn parsePostfixGroup(p: *Parser) node.Expr {
-    const left = p.parseAtomExpr();
-    switch (p.at().type) {
-        .lbracket => return .{ .coll_access = p.parseCollAccessExpr(left) },
-        .inc, .dec, .bang, .qmark => return .{ .postfix = p.createPostfixExpr(left) },
-        .lparen => return .{ .call = p.parseCallExpr(left) },
-        .float_lit, .dot => return .{ .field_access = p.parseFieldAccessExpr(left) },
-        else => {},
+    var left = p.parseAtomExpr();
+    while (true) {
+        const wrap: node.Expr = switch (p.at().type) {
+            .lbracket => .{ .coll_access = p.parseCollAccessExpr(left) },
+            .inc, .dec, .bang, .qmark => .{ .postfix = p.createPostfixExpr(left) },
+            .lparen => .{ .call = p.parseCallExpr(left) },
+            .float_lit, .dot => .{ .selector_expr = p.parseSelectorExpr(left) },
+            else => return left,
+        };
+        left = wrap;
     }
-    return left;
 }
 
-fn parseFieldAccessExpr(p: *Parser, left: node.Expr) node.FieldAccessExpr {
-    var access = p.create(node.FieldAccessExpr);
-    access.value = p.ast.box(left);
+fn parseSelectorExpr(p: *Parser, left: node.Expr) node.SelectorExpr {
+    var selector = p.create(node.SelectorExpr);
+    selector.value = p.ast.box(left);
     if (p.on(.float_lit)) {
         const float_lit = p.at().lit.?.float;
         if (!float_lit.lex_flags.contains(.int) and !float_lit.lex_flags.contains(.exp)) {
@@ -672,13 +690,13 @@ fn parseFieldAccessExpr(p: *Parser, left: node.Expr) node.FieldAccessExpr {
             var id = p.create(node.Ident);
             // Synthesize identifier token
             id.token = .{ .type = .ident, .span = num };
-            access.field = ok(id);
-            return ok(access);
+            selector.field = ok(id);
+            return ok(selector);
         }
     }
-    if (!p.skipIf(.dot)) return err(access);
-    access.field = p.parseIdentOrInt();
-    return ok(access);
+    if (!p.skipIf(.dot)) return err(selector);
+    selector.field = p.parseIdentOrInt();
+    return ok(selector);
 }
 
 fn parseCallExpr(p: *Parser, left: node.Expr) node.CallExpr {
@@ -737,7 +755,7 @@ fn parseSliceRange(p: *Parser, begin: ?node.Expr) node.SliceRange {
 fn parseAtomExpr(p: *Parser) node.Expr {
     return again: switch (p.at().type) {
         .lparen => p.parseParenOrAnonCallExpr(),
-        .scope, .ident => .{ .ref_expr = p.parseRefExpr() },
+        .dot, .ident => .{ .ident_expr = p.parseIdentExpr() },
         .u8,
         .s8,
         .u16,
@@ -760,7 +778,6 @@ fn parseAtomExpr(p: *Parser) node.Expr {
         => .{ .token_expr = p.createTokenExpr() },
         else => if (p.expectOneOf(.{
             .lparen,
-            .scope,
             .ident,
             .char_lit,
             .str_lit,
@@ -786,10 +803,14 @@ fn parseAtomExpr(p: *Parser) node.Expr {
     };
 }
 
-fn parseRefExpr(p: *Parser) node.RefExpr {
-    var ref_expr = p.create(node.RefExpr);
-    ref_expr.name = p.parseScopedIdent();
-    return ok(ref_expr);
+fn parseIdentExpr(p: *Parser) node.IdentExpr {
+    var ident = p.create(node.IdentExpr);
+    ident.is_inferred = p.on(.dot);
+    if (ident.is_inferred) {
+        _ = p.next();
+    }
+    ident.name = p.parseIdent();
+    return ok(ident);
 }
 
 fn parseParenOrAnonCallExpr(p: *Parser) node.Expr {
@@ -860,22 +881,6 @@ fn handleAnonCallExpr(p: *Parser, first: node.CallExprArg) node.AnonCallExpr {
     call.args = p.zeroOrMoreDelimWithFirst(node.CallExprArg, first, parseCallExprArg, .comma, .rparen);
     if (!p.skipIf(.rparen)) return err(call);
     return ok(call);
-}
-
-fn parseScopedIdent(p: *Parser) node.ScopedIdent {
-    var scoped_ident = p.create(node.ScopedIdent);
-    var first: ?node.Ident = null;
-    if (p.on(.scope)) {
-        first = p.emptyIdent();
-    }
-    scoped_ident.idents = p.oneOrMoreDelimWithFirst(node.Ident, first, parseIdentOrInt, .scope, null);
-    return ok(scoped_ident);
-}
-
-fn emptyIdent(p: *Parser) node.Ident {
-    var ident = p.create(node.Ident);
-    ident.token = .{ .type = .empty, .span = "<empty>" };
-    return ok(ident);
 }
 
 // Create functions are intended to be called when you already know

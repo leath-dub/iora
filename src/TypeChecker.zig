@@ -6,6 +6,7 @@ const Code = @import("Code.zig");
 const GeneralContext = @import("GeneralContext.zig");
 const common = @import("common.zig");
 const ty = @import("type.zig");
+const TypeRef = @import("type_ref.zig").TypeRef;
 
 const TypeChecker = @This();
 
@@ -16,7 +17,6 @@ arena: std.heap.ArenaAllocator,
 global_scope: *node.Scope,
 scopes: std.SegmentedList(*node.Scope, 128) = .{},
 label_scopes: std.SegmentedList(*node.LabelScope, 128) = .{},
-type_hints: std.AutoHashMapUnmanaged(*node.Head, *node.Type) = .empty,
 
 pub fn init(ast: *Ast, code: *Code, store: *ty.Store) TypeChecker {
     return .{
@@ -30,7 +30,6 @@ pub fn init(ast: *Ast, code: *Code, store: *ty.Store) TypeChecker {
 
 pub fn deinit(tc: *TypeChecker) void {
     tc.arena.deinit();
-    tc.type_hints.deinit(tc.ctx().allocator);
 }
 
 pub fn enterSourceFile(tc: *TypeChecker, source_file: *node.SourceFile) void {
@@ -69,85 +68,45 @@ pub fn exitCompStmt(tc: *TypeChecker, comp_stmt: *node.CompStmt) void {
     tc.pop(&comp_stmt.scope);
 }
 
-pub fn exitFunParam(tc: *TypeChecker, fun_param: *node.FunParam) void {
-    tc.insert(fun_param);
-}
-
 pub fn enterVarDecl(tc: *TypeChecker, var_decl: *node.VarDecl) void {
     if (var_decl.type) |*t| {
         var_decl.type_ref = tc.type_store.intern(t);
-        if (var_decl.init_expr) |*expr| {
-            tc.hint(expr, &var_decl.type.?);
-        }
     }
 }
 
-// Insert variable declaration on exit so the rhs does not have access to it.
-pub fn exitVarDecl(tc: *TypeChecker, var_decl: *node.VarDecl) void {
-    if (tc.top() != tc.global_scope) {
-        tc.insert(var_decl);
+pub fn exitIdentExpr(tc: *TypeChecker, ident_expr: *node.IdentExpr) void {
+    if (ident_expr.is_inferred) {
+        common.todoNoReturn("resolve inferred names", .{});
     }
-}
-
-pub fn enterRefExpr(tc: *TypeChecker, ref_expr: *node.RefExpr) void {
-    var scope = tc.top();
-    if (ref_expr.name.isGlobal()) {
-        scope = tc.global_scope;
-    } else {
-        // Only check hint scope if scoped ident is not explicitly
-        // trying to resolve in global scope
-        if (tc.getHint(&ref_expr.head)) |type_hint| {
-            // First lookup in hint scopes
-            again: switch (type_hint.*) {
-                .@"enum" => |en| {
-                    _ = common.resolveScoped(&en.scope, &ref_expr.name, .{
-                        .lookup_mode = .local,
-                    });
-                },
-                .tuple => |tup| {
-                    _ = common.resolveScoped(&tup.scope, &ref_expr.name, .{
-                        .lookup_mode = .local,
-                    });
-                },
-                .sum => |sum| {
-                    _ = common.resolveScoped(&sum.scope, &ref_expr.name, .{
-                        .lookup_mode = .local,
-                    });
-                },
-                .err => |err| continue :again err.child.*,
-                .scoped_ident => |si| {
-                    _ = common.resolveScoped(scope, &ref_expr.name, .{
-                        .symbol = si.resolves_to,
-                        .lookup_mode = .local,
-                    });
-                },
-                else => {},
-            }
-        }
-    }
-
-    if (ref_expr.name.resolves_to != null) {
+    if (ident_expr.resolves_to == null) {
         return;
     }
 
-    const scoped_ident = &ref_expr.name;
-    if (common.resolveScoped(scope, scoped_ident, .{}) == null) {
-        tc.raise(scoped_ident.head.position, "undefined: {f}", .{scoped_ident});
+    const name = &ident_expr.name;
+    const symbol = ident_expr.resolves_to.?;
+
+    if (tc.typeOf(name, symbol)) |type_ref| {
+        ident_expr.type_ref = type_ref;
     }
 }
 
-pub fn exitRefExpr(tc: *TypeChecker, ref_expr: *node.RefExpr) void {
-    const name = &ref_expr.name;
-    if (name.resolves_to == null) {
-        ref_expr.type_ref = .dirty;
+pub fn exitSelectorExpr(tc: *TypeChecker, selector_expr: *node.SelectorExpr) void {
+    if (selector_expr.resolves_to == null) {
         return;
     }
 
-    const symbol = name.resolves_to.?;
+    const name = &selector_expr.field;
+    const symbol = selector_expr.resolves_to.?;
 
-    ref_expr.type_ref = switch (symbol.data) {
+    if (tc.typeOf(name, symbol)) |type_ref| {
+        selector_expr.type_ref = type_ref;
+    }
+}
+
+fn typeOf(tc: *TypeChecker, name: *const node.Ident, symbol: node.Symbol) ?TypeRef {
+    return switch (symbol.data) {
         .struct_field => |st| out: {
-            tc.raise(name.head.position, "cannot reference struct field {f} in this context", .{name});
+            tc.raise(name.head.position, "cannot reference struct field {s} in this context", .{name.text()});
             // Not sure how you would raise this error, however I think it
             // is sane to set the type of the reference to be the type of
             // the field itself
@@ -155,11 +114,16 @@ pub fn exitRefExpr(tc: *TypeChecker, ref_expr: *node.RefExpr) void {
         },
         .sub_type, .type_decl => .type,
         .enumerator => out: {
-            const enum_type = symbol.type_ctx.?.enum_type;
             // Bit of a hack here, need to be careful when doing things like
             // this to make sure the interner does not produce a point to
             // a stack reference
-            var t: node.Type = .{ .@"enum" = enum_type.* };
+            const t = switch (symbol.type_ctx.?) {
+                .enum_type => |en| node.Type{ .@"enum" = en.* },
+                .type_decl => |td| node.Type{ .ident = node.IdentType{
+                    .name = td.name,
+                    .resolves_to = node.Symbol.fromSymbolLike(td),
+                } },
+            };
             break :out tc.type_store.intern(&t);
         },
         inline else => |foo| out: {
@@ -169,26 +133,16 @@ pub fn exitRefExpr(tc: *TypeChecker, ref_expr: *node.RefExpr) void {
                 //
                 // let x = foo;
                 // def foo = 10;
-                tc.raise(name.head.position, "undefined here: {f}", .{name});
-                ref_expr.type_ref = .dirty;
-                return;
+                tc.raise(name.head.position, "undefined here: {s}", .{name.text()});
+                return .dirty;
             }
             break :out foo.type_ref;
         },
     };
 }
 
-pub fn enterCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
-    // If we have a type hint, forward it to the left hand side of the
-    // call.
-    //
-    // This allows for functions to be resolved using type hint:
-    //
-    // let x: Foo = foo_method();
-    if (tc.getHint(&call.head)) |type_hint| {
-        tc.hint(call.callable, type_hint);
-    }
-}
+// TODO: use Ast.ChildDisposition to order tree walk so that type hints
+// are set for function parameters and binary operands.
 
 pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
     const callable = tc.type_store.get(call.callable.getType());
@@ -262,10 +216,10 @@ fn insert(tc: *TypeChecker, symbol_: anytype) void {
     }
 }
 
-fn hint(tc: *TypeChecker, expr: *node.Expr, t: *node.Type) void {
-    tc.type_hints.put(tc.ctx().allocator, expr.head(), t) catch @panic("OOM");
-}
-
-fn getHint(tc: *TypeChecker, head: *node.Head) ?*node.Type {
-    return tc.type_hints.get(head);
-}
+// fn hint(tc: *TypeChecker, expr: *node.Expr, t: *node.Type) void {
+//     tc.type_hints.put(tc.ctx().allocator, expr.head(), t) catch @panic("OOM");
+// }
+//
+// fn getHint(tc: *TypeChecker, head: *node.Head) ?*node.Type {
+//     return tc.type_hints.get(head);
+// }

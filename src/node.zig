@@ -90,8 +90,29 @@ pub const Type = union(enum) {
     ptr: PtrType,
     err: ErrType,
     fun: FunType,
-    scoped_ident: ScopedIdent,
+    ident: IdentType,
+    selector: SelectorType,
     dirty,
+};
+
+pub const IdentType = struct {
+    head: Head = .{},
+    name: Ident = .{},
+    is_inferred: bool = false,
+    resolves_to: ?Symbol = null,
+};
+
+pub const IdentOrSelector = union(enum) {
+    ident: IdentType,
+    selector: SelectorType,
+    dirty,
+};
+
+pub const SelectorType = struct {
+    head: Head = .{},
+    type: *IdentOrSelector = undefined,
+    field: Ident = .{},
+    resolves_to: ?Symbol = null,
 };
 
 pub const BuiltinType = struct {
@@ -180,30 +201,6 @@ pub const Ident = struct {
     }
 };
 
-pub const ScopedIdent = struct {
-    head: Head = .{},
-    idents: []Ident = &.{},
-    resolves_to: ?Symbol = null,
-
-    pub fn isGlobal(si: ScopedIdent) bool {
-        return si.idents[0].token.type == .empty;
-    }
-
-    pub fn format(
-        si: ScopedIdent,
-        w: *std.Io.Writer,
-    ) std.Io.Writer.Error!void {
-        for (si.idents, 0..) |id, i| {
-            if (i != 0) {
-                try w.writeAll("::");
-            }
-            if (id.token.type != .empty) {
-                try w.print("{s}", .{id.text()});
-            }
-        }
-    }
-};
-
 pub const Stmt = union(enum) {
     decl: Decl,
     @"if": IfStmt,
@@ -228,7 +225,8 @@ pub const LabelledStmt = struct {
 pub const BranchStmt = struct {
     head: Head = .{},
     action: Token = .{},
-    label: ?Ident = null,
+    _label: ?*LabelledStmt = null,
+    label_name: ?Ident = null,
 };
 
 pub const Assign = struct {
@@ -322,14 +320,14 @@ pub const CompStmt = struct {
 pub const Expr = union(enum) {
     postfix: PostfixExpr,
     call: CallExpr,
-    field_access: FieldAccessExpr,
     coll_access: CollAccessExpr,
+    ident_expr: IdentExpr,
+    selector_expr: SelectorExpr,
     unary: UnaryExpr,
     bin: BinExpr,
     // Atomic expressions
     anon_call: AnonCallExpr,
     token_expr: TokenExpr,
-    ref_expr: RefExpr,
     dirty,
 
     pub fn head(expr: *Expr) *Head {
@@ -347,10 +345,20 @@ pub const Expr = union(enum) {
     }
 };
 
-pub const RefExpr = struct {
+pub const IdentExpr = struct {
     head: Head = .{},
-    name: ScopedIdent = .{},
+    name: Ident = .{},
+    is_inferred: bool = false,
     type_ref: TypeRef = .unset,
+    resolves_to: ?Symbol = null,
+};
+
+pub const SelectorExpr = struct {
+    head: Head = .{},
+    value: *Expr = undefined,
+    field: Ident = .{},
+    type_ref: TypeRef = .unset,
+    resolves_to: ?Symbol = null,
 };
 
 pub const TokenExpr = struct {
@@ -425,13 +433,6 @@ pub const SliceRange = struct {
     end: ?Expr = null,
 };
 
-pub const FieldAccessExpr = struct {
-    head: Head = .{},
-    value: *Expr = undefined,
-    field: Ident = .{},
-    type_ref: TypeRef = .unset,
-};
-
 pub const Flag = enum {
     dirty,
     last_child,
@@ -494,6 +495,7 @@ pub const Symbol = struct {
     };
 
     pub const TypeCtx = union(enum) {
+        type_decl: *TypeDecl,
         enum_type: *EnumType,
     };
 
@@ -522,7 +524,7 @@ pub const Scope = struct {
     }
 
     pub fn format(s: Scope, w: *std.Io.Writer) std.Io.Writer.Error!void {
-        try w.writeByte('[');
+        try w.writeByte('(');
         var it = s.entries.iterator();
         var first = true;
         while (it.next()) |entry| {
@@ -531,7 +533,7 @@ pub const Scope = struct {
             } else first = false;
             try w.writeAll(entry.key_ptr.*);
         }
-        try w.writeByte(']');
+        try w.writeByte(')');
     }
 
     pub const dont_walk = true;
@@ -554,7 +556,7 @@ pub const LabelScope = struct {
     }
 
     pub fn format(s: LabelScope, w: *std.Io.Writer) std.Io.Writer.Error!void {
-        try w.writeByte('[');
+        try w.writeByte('(');
         var it = s.entries.iterator();
         var first = true;
         while (it.next()) |entry| {
@@ -563,7 +565,7 @@ pub const LabelScope = struct {
             } else first = false;
             try w.writeAll(entry.key_ptr.*);
         }
-        try w.writeByte(']');
+        try w.writeByte(')');
     }
 
     pub const dont_walk = true;

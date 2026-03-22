@@ -14,10 +14,8 @@ const ty = @import("type.zig");
 
 // Semantic passes
 const ModuleScopeResolver = @import("ModuleScopeResolver.zig");
-const PostModuleScopeResolver = @import("PostModuleScopeResolver.zig");
+const LexicalScopeResolver = @import("LexicalScopeResolver.zig");
 const TypeChecker = @import("TypeChecker.zig");
-// const ScopeBuilder = @import("ScopeBuilder.zig");
-// const IdentResolver = @import("IdentResolver.zig");
 
 const Cli = struct {
     input_path: []const u8,
@@ -45,6 +43,20 @@ fn openErrorMsg(e: fs.File.OpenError) ?[]const u8 {
         error.AccessDenied => "access denied",
         else => null,
     };
+}
+
+fn invokeListener(ast: *Ast, code: *const Code, listener: anytype) !void {
+    if (@typeInfo(@TypeOf(listener)) != .pointer) {
+        @compileError("listener must be a pointer");
+    }
+    Ast.walk(listener, &ast.root.?);
+    if (@hasDecl(@TypeOf(listener.*), "deinit")) {
+        listener.deinit();
+    }
+    if (code.errors != 0) {
+        std.debug.print("{f}", .{ast});
+        return error.SemanticAnalysisFailed;
+    }
 }
 
 pub fn main() !void {
@@ -78,53 +90,16 @@ pub fn main() !void {
     }
 
     var msr = ModuleScopeResolver.init(&ast, &code);
-    Ast.walk(&msr, &ast.root.?);
+    try invokeListener(&ast, &code, &msr);
 
-    if (code.errors != 0) {
-        std.debug.print("{f}", .{ast});
-        return error.SemanticAnalysisFailed;
-    }
-
-    var tsr = PostModuleScopeResolver.init(&ast, &code);
-    Ast.walk(&tsr, &ast.root.?);
-    tsr.deinit();
-
-    if (code.errors != 0) {
-        std.debug.print("{f}", .{ast});
-        return error.SemanticAnalysisFailed;
-    }
+    var lsr = LexicalScopeResolver.init(&ast, &code);
+    try invokeListener(&ast, &code, &lsr);
 
     var type_store = ty.Store.init(&ctx);
     defer type_store.deinit();
 
     var tc = TypeChecker.init(&ast, &code, &type_store);
-    Ast.walk(&tc, &ast.root.?);
-    tc.deinit();
-
-    if (code.errors != 0) {
-        std.debug.print("{f}", .{ast});
-        return error.SemanticAnalysisFailed;
-    }
+    try invokeListener(&ast, &code, &tc);
 
     std.debug.print("{f}", .{ast});
-
-    // var scope_builder = ScopeBuilder.init(&ast, &code);
-    // Ast.walk(&scope_builder, &ast.root.?);
-    // scope_builder.deinit();
-    //
-    // if (code.errors != 0) {
-    //     std.debug.print("{f}", .{ast});
-    //     return error.SemanticAnalysisFailed;
-    // }
-    //
-    // var ident_resolver = IdentResolver.init(&ast, &code);
-    // Ast.walk(&ident_resolver, &ast.root.?);
-    // ident_resolver.deinit();
-    //
-    // if (code.errors != 0) {
-    //     std.debug.print("{f}", .{ast});
-    //     return error.SemanticAnalysisFailed;
-    // }
-    //
-    // std.debug.print("{f}", .{ast});
 }
