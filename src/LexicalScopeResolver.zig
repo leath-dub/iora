@@ -277,7 +277,7 @@ pub fn exitSelectorType(lr: *LexicalScopeResolver, sel: *node.SelectorType) void
     };
     const field = &sel.field;
     if (res) |symbol| {
-        resolveSelector(symbol, field, &sel.resolves_to);
+        common.resolveSelector(symbol, field, &sel.resolves_to);
     }
     if (sel.resolves_to == null) {
         lr.raise(field.head.position, "undefined: {s}", .{field.text()});
@@ -303,44 +303,10 @@ pub fn exitSelectorExpr(lr: *LexicalScopeResolver, selector_expr: *node.Selector
     };
     const field = &selector_expr.field;
     if (res) |symbol| {
-        resolveSelector(symbol, field, &selector_expr.resolves_to);
+        common.resolveSelector(symbol, field, &selector_expr.resolves_to);
     }
     if (selector_expr.resolves_to == null) {
         lr.raise(field.head.position, "undefined: {s}", .{field.text()});
-    }
-}
-
-fn resolveSelector(symbol: node.Symbol, field: *const node.Ident, out: *?node.Symbol) void {
-    var final: ?node.Symbol = symbol;
-    defer out.* = final;
-
-    if (final) |s| {
-        again: switch (s.data) {
-            .type_decl => |td| {
-                // First try the type scope
-                final = common.resolveLocal(&td.scope, field);
-
-                // Next try local sub-scope
-                if (final == null) {
-                    const fallback_scope = switch (td.type) {
-                        .tuple => |*tup| &tup.scope,
-                        .sum => |*sum| &sum.scope,
-                        .@"enum" => |*en| &en.scope,
-                        .selector => |*sel| blk: {
-                            if (sel.resolves_to) |ss| {
-                                continue :again ss.data;
-                            }
-                            break :blk null;
-                        },
-                        else => null,
-                    };
-                    if (fallback_scope) |fs| {
-                        final = common.resolveLocal(fs, field);
-                    }
-                }
-            },
-            else => {},
-        }
     }
 }
 

@@ -3,7 +3,7 @@ const std = @import("std");
 const Token = @import("Lexer.zig").Token;
 const Code = @import("Code.zig");
 const common = @import("common.zig");
-const TypeRef = @import("type_ref.zig").TypeRef;
+const TypeVar = @import("type_ref.zig").TypeVar;
 
 // TODO:
 // pub const Module = struct {
@@ -36,7 +36,7 @@ pub const VarDecl = struct {
     declarator: Token = .{},
     name: Ident = .{},
     type: ?Type = null,
-    type_ref: TypeRef = .unset,
+    type_var: TypeVar = .unset,
     init_expr: ?Expr = null,
 };
 
@@ -45,7 +45,7 @@ pub const DefDecl = struct {
     type_name: ?Ident = null,
     name: Ident = .{},
     type: ?Type = null,
-    type_ref: TypeRef = .unset,
+    type_var: TypeVar = .unset,
     init_expr: Expr = .dirty,
 };
 
@@ -59,7 +59,7 @@ pub const FunDecl = struct {
     body: CompStmt = .{},
     scope: Scope = .{},
     label_scope: LabelScope = .{},
-    type_ref: TypeRef = .unset,
+    type_var: TypeVar = .unset,
 };
 
 pub const FunParam = struct {
@@ -67,7 +67,7 @@ pub const FunParam = struct {
     name: Ident = .{},
     type: Type = .dirty,
     unwrap: bool = false,
-    type_ref: TypeRef = .unset,
+    type_var: TypeVar = .unset,
 };
 
 pub const TypeDecl = struct {
@@ -76,7 +76,7 @@ pub const TypeDecl = struct {
     type: Type = .dirty,
     // NOTE: this represents the underlying type
     // not the distinct type created by the declaration
-    type_ref: TypeRef = .unset,
+    type_var: TypeVar = .unset,
     scope: Scope = .{},
 };
 
@@ -93,6 +93,20 @@ pub const Type = union(enum) {
     ident: IdentType,
     selector: SelectorType,
     dirty,
+
+    pub fn head(ty: *Type) *Head {
+        return switch (ty.*) {
+            .dirty => unreachable,
+            inline else => |*foo| &foo.head,
+        };
+    }
+
+    pub fn headConst(ty: *const Type) *const Head {
+        return switch (ty.*) {
+            .dirty => unreachable,
+            inline else => |*foo| &foo.head,
+        };
+    }
 };
 
 pub const IdentType = struct {
@@ -135,7 +149,7 @@ pub const TupleType = struct {
 pub const SubType = struct {
     head: Head = .{},
     type: Type = .dirty,
-    type_ref: TypeRef = .unset,
+    type_var: TypeVar = .unset,
 };
 
 pub const SumType = struct {
@@ -233,7 +247,7 @@ pub const Assign = struct {
     head: Head = .{},
     lvalue: Expr = .dirty,
     rvalue: Expr = .dirty,
-    type_ref: TypeRef = .unset,
+    type_var: TypeVar = .unset,
 };
 
 pub const IfStmt = struct {
@@ -268,7 +282,7 @@ pub const SumTypeReduce = struct {
     declarator: Token = .{},
     name: Ident = .{},
     reduction: Type = .dirty,
-    type_ref: TypeRef = .unset,
+    type_var: TypeVar = .unset,
     value: Expr = .dirty,
 };
 
@@ -298,7 +312,7 @@ pub const CaseBinding = struct {
     declarator: Token = .{},
     name: Ident = .{},
     type: Type = .dirty,
-    type_ref: TypeRef = .unset,
+    type_var: TypeVar = .unset,
 };
 
 pub const ReturnStmt = struct {
@@ -337,10 +351,24 @@ pub const Expr = union(enum) {
         };
     }
 
-    pub fn getType(expr: Expr) TypeRef {
-        return switch (expr) {
+    pub fn headConst(expr: *const Expr) *const Head {
+        return switch (expr.*) {
+            .dirty => unreachable,
+            inline else => |*foo| &foo.head,
+        };
+    }
+
+    pub fn getType(expr: *Expr) *TypeVar {
+        return switch (expr.*) {
+            .dirty => unreachable,
+            inline else => |*foo| &foo.type_var,
+        };
+    }
+
+    pub fn getTypeConst(expr: *const Expr) *const TypeVar {
+        return switch (expr.*) {
             .dirty => .unset,
-            inline else => |foo| foo.type_ref,
+            inline else => |foo| &foo.type_var,
         };
     }
 };
@@ -349,7 +377,7 @@ pub const IdentExpr = struct {
     head: Head = .{},
     name: Ident = .{},
     is_inferred: bool = false,
-    type_ref: TypeRef = .unset,
+    type_var: TypeVar = .unset,
     resolves_to: ?Symbol = null,
 };
 
@@ -357,28 +385,28 @@ pub const SelectorExpr = struct {
     head: Head = .{},
     value: *Expr = undefined,
     field: Ident = .{},
-    type_ref: TypeRef = .unset,
+    type_var: TypeVar = .unset,
     resolves_to: ?Symbol = null,
 };
 
 pub const TokenExpr = struct {
     head: Head = .{},
     token: Token = .{},
-    type_ref: TypeRef = .unset,
+    type_var: TypeVar = .unset,
 };
 
 pub const PostfixExpr = struct {
     head: Head = .{},
     op: Token,
     operand: *Expr,
-    type_ref: TypeRef = .unset,
+    type_var: TypeVar = .unset,
 };
 
 pub const UnaryExpr = struct {
     head: Head = .{},
     op: Token,
     operand: *Expr,
-    type_ref: TypeRef = .unset,
+    type_var: TypeVar = .unset,
 };
 
 pub const BinExpr = struct {
@@ -386,20 +414,20 @@ pub const BinExpr = struct {
     op: Token = .{},
     left: *Expr,
     right: *Expr,
-    type_ref: TypeRef = .unset,
+    type_var: TypeVar = .unset,
 };
 
 pub const CallExpr = struct {
     head: Head = .{},
     callable: *Expr = undefined,
     args: []CallExprArg = &.{},
-    type_ref: TypeRef = .unset,
+    type_var: TypeVar = .unset,
 };
 
 pub const AnonCallExpr = struct {
     head: Head = .{},
     args: []CallExprArg = &.{},
-    type_ref: TypeRef = .unset,
+    type_var: TypeVar = .unset,
 };
 
 pub const CallExprArg = union(enum) {
@@ -418,7 +446,7 @@ pub const CollAccessExpr = struct {
     head: Head = .{},
     lvalue: *Expr,
     subscript: *CollSubscript,
-    type_ref: TypeRef = .unset,
+    type_var: TypeVar = .unset,
 };
 
 pub const CollSubscript = union(enum) {
@@ -502,6 +530,7 @@ pub const Symbol = struct {
     pub const dont_walk = true;
 };
 
+// TODO: add name to scope
 pub const Scope = struct {
     parent: ?*Scope = null,
     entries: std.StringHashMapUnmanaged(Symbol) = .empty,

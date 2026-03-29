@@ -5,7 +5,9 @@ const node = @import("node.zig");
 const GeneralContext = @import("GeneralContext.zig");
 const Token = @import("Lexer.zig").Token;
 const common = @import("common.zig");
-const TypeRef = @import("type_ref.zig").TypeRef;
+const tyref = @import("type_ref.zig");
+const TypeRef = tyref.TypeRef;
+const TypeVar = tyref.TypeVar;
 
 const meta = std.meta;
 const mem = std.mem;
@@ -359,7 +361,7 @@ pub const Dumper = struct {
             return false;
         }
         // Ship .unset type references
-        if (T == TypeRef) {
+        if (T == TypeRef or T == TypeVar) {
             if (data_ref.* == .unset) {
                 return false;
             }

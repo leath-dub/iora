@@ -3,7 +3,9 @@ const node = @import("node.zig");
 const common = @import("common.zig");
 
 const GeneralContext = @import("GeneralContext.zig");
-const TypeRef = @import("type_ref.zig").TypeRef;
+const tyref = @import("type_ref.zig");
+const TypeRef = tyref.TypeRef;
+const TypeVar = tyref.TypeVar;
 
 const mem = std.mem;
 
@@ -24,6 +26,9 @@ pub const Store = struct {
         return store;
     }
 
+    pub fn intern(store: *Store, t: *const node.Type) TypeRef {
+        return store.internImpl(t, true) catch @panic("OOM");
+    }
     // After the top level call to 'intern' we clear the scratch arena. This
     // allows the memory to be valid throughout recursive calls to 'internImpl`
     fn internImpl(store: *Store, t: *const node.Type, reset: bool) !TypeRef {
@@ -50,17 +55,23 @@ pub const Store = struct {
                 return store.internDataStable(.{ .slice = try store.internImpl(coll.value_type, false) });
             },
             .sum => |sum| {
-                var list = try scratch.alloc(TypeRef, sum.alts.len);
+                var list = try scratch.alloc(SumField, sum.alts.len);
                 for (sum.alts, 0..) |*alt, i| {
                     list[i] = switch (alt.*) {
-                        .type => |*ty| try store.internImpl(ty, false),
-                        .type_decl => |*td| store.internDataStable(.{ .user = td }),
+                        .type => |*ty| .{
+                            .name = null,
+                            .type = try store.internImpl(ty, false),
+                        },
+                        .type_decl => |*td| .{
+                            .name = td.name.text(),
+                            .type = store.internDataStable(.{ .user = td }),
+                        },
                         .dirty => unreachable,
                     };
                 }
                 const res = store.internData(.{ .sum = list });
                 if (res.inserted) {
-                    res.freeze(.{ .sum = try a.dupe(TypeRef, list) });
+                    res.freeze(.{ .sum = try a.dupe(SumField, list) });
                 }
                 return res.id;
             },
@@ -160,10 +171,6 @@ pub const Store = struct {
         }
     }
 
-    pub fn intern(store: *Store, t: *const node.Type) TypeRef {
-        return store.internImpl(t, true) catch @panic("OOM");
-    }
-
     const InternResult = struct {
         id: TypeRef,
         data_ptr: *Data,
@@ -177,7 +184,7 @@ pub const Store = struct {
     };
 
     fn internData(store: *Store, data: Data) InternResult {
-        const result = store.mapping.getOrPut(store.ctx.allocator, data) catch @panic("OOM");
+        const result = store.mapping.getOrPutContext(store.ctx.allocator, data, .{ .store = store }) catch @panic("OOM");
         if (result.found_existing) {
             return .{
                 .id = result.value_ptr.*,
@@ -200,12 +207,12 @@ pub const Store = struct {
     fn internDataStable(store: *Store, data: Data) TypeRef {
         const res = store.internData(data);
         if (res.inserted) {
-            res.data_ptr.* = data;
+            res.freeze(data);
         }
         return res.id;
     }
 
-    pub fn get(store: *Store, id: TypeRef) Data {
+    pub fn get(store: *const Store, id: TypeRef) Data {
         return store.storage.items[@intFromEnum(id)];
     }
 
@@ -226,15 +233,104 @@ pub const Data = union(enum) {
     ptr: TypeRef,
     slice: TypeRef,
     err: TypeRef,
-    sum: []TypeRef,
+    sum: []SumField,
     tuple: []TypeRef,
     @"enum": [][]const u8,
     @"struct": []StructField,
-    int, // TODO: add optional signed constraint
-    float,
     primitive,
 
+    pub fn formatWithStore(
+        data: Data,
+        store: *const Store,
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        switch (data) {
+            .user => |user| {
+                try writer.writeAll(user.name.text());
+            },
+            .fun => |fun| {
+                try writer.writeAll("fun (");
+                for (fun.params, 0..) |param, index| {
+                    if (index != 0) {
+                        try writer.writeAll(", ");
+                    }
+                    if (param.unwrap) {
+                        try writer.writeAll("..");
+                    }
+                    try formatView(store, &TypeVar{ .id = param.type }).format(writer);
+                }
+                try writer.writeByte(')');
+                if (fun.return_type != .unit) {
+                    try writer.print("-> {f}", .{
+                        formatView(store, &TypeVar{ .id = fun.return_type }),
+                    });
+                }
+            },
+            .ptr => |child| {
+                try writer.print("*{f}", .{
+                    formatView(store, &TypeVar{ .id = child }),
+                });
+            },
+            .slice => |child| {
+                try writer.print("[]{f}", .{
+                    formatView(store, &TypeVar{ .id = child }),
+                });
+            },
+            .err => |child| {
+                try writer.print("!{f}", .{
+                    formatView(store, &TypeVar{ .id = child }),
+                });
+            },
+            .sum => |alts| {
+                try writer.writeByte('(');
+                for (alts, 0..) |alt, index| {
+                    if (index != 0) {
+                        try writer.writeAll("| ");
+                    }
+                    try formatView(store, &TypeVar{ .id = alt.type }).format(writer);
+                }
+                try writer.writeByte(')');
+            },
+            .tuple => |alts| {
+                try writer.writeByte('(');
+                for (alts, 0..) |alt, index| {
+                    if (index != 0) {
+                        try writer.writeAll(", ");
+                    }
+                    try formatView(store, &TypeVar{ .id = alt }).format(writer);
+                }
+                try writer.writeByte(')');
+            },
+            .@"enum" => |enumerators| {
+                try writer.writeAll("enum {");
+                for (enumerators, 0..) |enumerator, index| {
+                    if (index != 0) {
+                        try writer.writeAll(", ");
+                    }
+                    try writer.writeAll(enumerator);
+                }
+                try writer.writeByte('}');
+            },
+            .@"struct" => |fields| {
+                try writer.writeAll("struct {");
+                for (fields, 0..) |field, index| {
+                    if (index != 0) {
+                        try writer.writeAll(", ");
+                    }
+                    try writer.print("{s}: {f}", .{
+                        field.name,
+                        formatView(store, &TypeVar{ .id = field.type }),
+                    });
+                }
+                try writer.writeByte('}');
+            },
+            .primitive => try writer.writeAll("primitive type"),
+        }
+    }
+
     pub const Context = struct {
+        store: *const Store,
+
         pub fn hash(_: Context, data: Data) u64 {
             var hasher = std.hash.Wyhash.init(0);
             switch (data) {
@@ -248,7 +344,7 @@ pub const Data = union(enum) {
                 },
                 .sum => |sum| {
                     for (sum) |alt| {
-                        hasher.update(mem.asBytes(&alt));
+                        hasher.update(mem.asBytes(&alt.type));
                     }
                     hasher.update(mem.asBytes(&Data.sum));
                 },
@@ -310,7 +406,12 @@ pub const Data = union(enum) {
                     if (sum.len != b.sum.len) {
                         return false;
                     }
-                    return mem.eql(TypeRef, sum, b.sum);
+                    for (sum, b.sum) |alt_a, alt_b| {
+                        if (alt_a.type != alt_b.type) {
+                            return false;
+                        }
+                    }
+                    return true;
                 },
                 .tuple => |tuple| {
                     if (tuple.len != b.tuple.len) {
@@ -355,7 +456,56 @@ pub const StructField = struct {
     type: TypeRef,
 };
 
+pub const SumField = struct {
+    name: ?[]const u8,
+    type: TypeRef,
+};
+
 pub const Array = struct {
     child: TypeRef,
     capacity: usize,
 };
+
+pub const FormatView = struct {
+    ref: *const TypeVar,
+    store: *const Store,
+
+    pub fn format(
+        view: FormatView,
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        switch (view.ref.*) {
+            .dirty => try writer.writeAll("type with error"),
+            .ptr => |ptr| try formatView(view.store, ptr).format(writer),
+            .unset => try writer.writeAll("unset type"),
+            .float => try writer.writeAll("floating point type"),
+            .int => try writer.writeAll("integer type"),
+            .inferred => try writer.writeAll("inferred name"),
+            .id => |id| switch (id) {
+                inline .u8,
+                .s8,
+                .u16,
+                .s16,
+                .u32,
+                .s32,
+                .u64,
+                .s64,
+                .f32,
+                .f64,
+                .str,
+                .type,
+                .unit => |tag| try writer.writeAll(@tagName(tag)),
+                else => |index| {
+                    try view.store.get(index).formatWithStore(view.store, writer);
+                },
+            },
+        }
+    }
+};
+
+pub fn formatView(store: *const Store, type_var: *const TypeVar) FormatView {
+    return .{
+        .ref = type_var,
+        .store = store,
+    };
+}
