@@ -9,18 +9,18 @@ const GeneralContext = @import("GeneralContext.zig");
 const unicode_utils = @import("unicode.zig");
 
 const TokenDescriptor = struct {
-    tag: @Type(.enum_literal),
+    tag: @EnumLiteral(),
     keyword: bool = false,
     description: []const u8,
 
-    fn init(comptime tag: @Type(.enum_literal), description: []const u8) TokenDescriptor {
+    fn init(comptime tag: @EnumLiteral(), description: []const u8) TokenDescriptor {
         return .{
             .tag = tag,
             .description = description,
         };
     }
 
-    fn initKeyword(comptime tag: @Type(.enum_literal)) TokenDescriptor {
+    fn initKeyword(comptime tag: @EnumLiteral()) TokenDescriptor {
         return .{
             .tag = tag,
             .keyword = true,
@@ -125,42 +125,32 @@ const token_descriptors = [_]TokenDescriptor{
 
 pub const TokenType = blk: {
     var index: usize = 0;
-    var fields: [token_descriptors.len]std.builtin.Type.EnumField = undefined;
+    var tags: [token_descriptors.len][]const u8 = undefined;
+    var values: [token_descriptors.len]u8 = undefined;
 
     for (token_descriptors) |td| {
-        fields[index] = .{ .name = @tagName(td.tag), .value = index };
+        tags[index] = @ptrCast(@tagName(td.tag));
+        values[index] = index;
         index += 1;
     }
 
-    break :blk @Type(.{
-        .@"enum" = .{
-            .tag_type = u8,
-            .decls = &.{},
-            .fields = fields[0..index],
-            .is_exhaustive = true,
-        },
-    });
+    break :blk @Enum(u8, .exhaustive, tags[0..index], values[0..index]);
 };
 
 pub const Keyword = blk: {
     var index: usize = 0;
-    var fields: [token_descriptors.len]std.builtin.Type.EnumField = undefined;
+    var tags: [token_descriptors.len][]const u8 = undefined;
+    var values: [token_descriptors.len]u8 = undefined;
 
     for (token_descriptors) |td| {
         if (td.keyword) {
-            fields[index] = .{ .name = @tagName(td.tag), .value = index };
+            tags[index] = @ptrCast(@tagName(td.tag));
+            values[index] = index;
             index += 1;
         }
     }
 
-    break :blk @Type(.{
-        .@"enum" = .{
-            .tag_type = u8,
-            .decls = &.{},
-            .fields = fields[0..index],
-            .is_exhaustive = true,
-        },
-    });
+    break :blk @Enum(u8, .exhaustive, tags[0..index], values[0..index]);
 };
 
 pub const Base = enum {
@@ -173,12 +163,29 @@ pub const Base = enum {
 pub const IntLit = struct {
     base: Base,
     value: u64 = 0,
-    suffix: ?Code.Offset = null,
+    suffix: union(enum) {
+        offset: Code.Offset,
+        synthesized_sign,
+        none,
+    } = .none,
+
+    pub fn isSigned(lit: IntLit, code: *const Code) bool {
+        return switch (lit.suffix) {
+            .offset => |off| code.text[off] == 's',
+            .synthesized_sign => true,
+            .none => false,
+        };
+    }
 };
 
 pub const CharLit = u32;
 pub const StringLit = struct {
     inner_text: []const u8,
+};
+
+pub const Fract = struct {
+    value: u64 = 0,
+    leading_zeroes: u64 = 0,
 };
 
 pub const FloatLit = struct {
@@ -188,7 +195,7 @@ pub const FloatLit = struct {
         exp,
     };
     int: u64 = 0,
-    fract: u64 = 0,
+    fract: Fract = .{},
     exp: union(enum) {
         signed: u64,
         unsigned: u64,
@@ -232,6 +239,8 @@ pub fn describeTokenType(tt: TokenType) []const u8 {
     };
     unreachable;
 }
+
+const DigitsCache = std.AutoHashMap(usize, Digits); // offset to Digits
 
 ctx: *GeneralContext,
 code: *Code,
@@ -635,6 +644,12 @@ fn lexHexFloat(l: *Lexer) LexError!Token {
 
     if (l.ahead_n('.', offset)) {
         offset += 1;
+
+        var leading_zeroes: u64 = 0;
+        while (l.ahead_n('0', offset + leading_zeroes)) {
+            leading_zeroes += 1;
+        }
+
         fract_digits = l.lexDigits(.hex, offset) catch out: {
             // Failed to lex digits. This is only acceptible if we did specify
             // the integer part. Otherwise we would be allowing `0x.` as a valid
@@ -646,8 +661,9 @@ fn lexHexFloat(l: *Lexer) LexError!Token {
         };
         if (fract_digits) |fd| {
             offset += fd.len;
-            float_lit.fract += fd.value;
+            float_lit.fract.value = fd.value;
         }
+        float_lit.fract.leading_zeroes = leading_zeroes;
     }
 
     if (int_digits != null) {
@@ -707,6 +723,12 @@ fn lexDecimalFloat(l: *Lexer) LexError!Token {
     const decimal_point = l.ahead_n('.', offset);
     if (decimal_point) {
         offset += 1;
+
+        var leading_zeroes: u64 = 0;
+        while (l.ahead_n('0', offset + leading_zeroes)) {
+            leading_zeroes += 1;
+        }
+
         fract_digits = l.lexDigits(.decimal, offset) catch out: {
             // Only acceptible to have no digits after '.' in case the
             // integer part was specified - this is so we cant allow just '.' to
@@ -718,8 +740,9 @@ fn lexDecimalFloat(l: *Lexer) LexError!Token {
         };
         if (fract_digits) |fd| {
             offset += fd.len;
-            float_lit.fract += fd.value;
+            float_lit.fract.value = fd.value;
         }
+        float_lit.fract.leading_zeroes = leading_zeroes;
     }
 
     if (int_digits != null) {
@@ -793,6 +816,8 @@ fn lexDigits(l: *Lexer, comptime base: Base, start: usize) LexError!Digits {
 
     if (digits.overflow) {
         const offset = l.cursor + start;
+        // TODO: fix this error being raised twice since we try lex float and
+        // then lex integer
         l.raise(offset, "number '{s}' is too large to be stored as u64", .{l.code.text[offset..][0..digits.len]});
     }
 
@@ -838,9 +863,9 @@ fn lexInt(l: *Lexer) LexError!Token {
     int_lit.suffix = switch (l.scan(offset) orelse '\x00') {
         'u', 's' => off: {
             defer offset += 1;
-            break :off l.cursor + offset;
+            break :off .{ .offset = l.cursor + offset };
         },
-        else => null,
+        else => .none,
     };
 
     int_lit.value = digits.value;
@@ -885,8 +910,8 @@ fn lexIdent(l: *Lexer) Token {
     return tok;
 }
 
-fn float(int: u64, fract: u64, exp: i64, comptime lex_flags: anytype) FloatLit {
-    var float_lit = FloatLit{ .int = int, .fract = fract, .lex_flags = .initMany(&lex_flags) };
+fn float(int: u64, lead: u64, fract: u64, exp: i64, comptime lex_flags: anytype) FloatLit {
+    var float_lit = FloatLit{ .int = int, .fract = .{ .leading_zeroes = lead, .value = fract }, .lex_flags = .initMany(&lex_flags) };
     if (exp < 0) {
         float_lit.exp = .{ .signed = @abs(exp) };
     } else {
@@ -901,7 +926,7 @@ const LexerTest = struct {
     syntax: heap.ArenaAllocator,
 
     pub fn setUp(t: *LexerTest) void {
-        t.tc = GeneralContext.Testing.init();
+        t.tc = GeneralContext.Testing.init(std.testing.io);
         t.gc = t.tc.general();
         t.syntax = t.gc.createLifetime();
     }
@@ -919,8 +944,8 @@ const LexerTest = struct {
         try std.testing.expect(tok.lit != null);
         try std.testing.expectEqual(.int, @as(std.meta.Tag(Lit), tok.lit.?));
         var suffix_got: ?u8 = null;
-        if (tok.lit.?.int.suffix) |off| {
-            suffix_got = text[off];
+        if (tok.lit.?.int.suffix == .offset) {
+            suffix_got = text[tok.lit.?.int.suffix.offset];
         }
         try std.testing.expectEqual(suffix, suffix_got);
         try std.testing.expectEqual(value, tok.lit.?.int.value);
@@ -987,21 +1012,22 @@ test "floating point lexing" {
     defer t.tearDown();
 
     // Data taken from: https://go.dev/ref/spec
-    try t.expectFloatLit("0.", float(0, 0, 1, .{.int}));
-    try t.expectFloatLit("072.40", float(72, 40, 1, .{ .int, .fract }));
-    try t.expectFloatLit("2.71828", float(2, 71828, 1, .{ .int, .fract }));
-    try t.expectFloatLit("1.e+0", float(1, 0, 0, .{ .int, .exp }));
-    try t.expectFloatLit("6.67428e-11", float(6, 67428, -11, .{ .int, .fract, .exp }));
-    try t.expectFloatLit("1e6", float(1, 0, 6, .{ .int, .exp }));
-    try t.expectFloatLit(".25", float(0, 25, 1, .{.fract}));
-    try t.expectFloatLit(".12345e+5", float(0, 12345, 5, .{ .fract, .exp }));
-    try t.expectFloatLit("1_5.", float(15, 0, 1, .{.int}));
-    try t.expectFloatLit("0.15e+0_2", float(0, 15, 2, .{ .int, .fract, .exp }));
-    try t.expectFloatLit("0x1p-2", float(1, 0, -2, .{ .int, .exp }));
-    try t.expectFloatLit("0x2.p10", float(2, 0, 10, .{ .int, .exp }));
-    try t.expectFloatLit("0x1.Fp+0", float(1, 0xF, 0, .{ .int, .fract, .exp }));
-    try t.expectFloatLit("0x.8p-1", float(0, 8, -1, .{ .fract, .exp }));
-    try t.expectFloatLit("0x_1FFFp-16", float(0x1FFF, 0, -16, .{ .int, .exp }));
+    try t.expectFloatLit("0.", float(0, 0, 0, 1, .{.int}));
+    try t.expectFloatLit("072.40", float(72, 0, 40, 1, .{ .int, .fract }));
+    try t.expectFloatLit("2.71828", float(2, 0, 71828, 1, .{ .int, .fract }));
+    try t.expectFloatLit("1.e+0", float(1, 0, 0, 0, .{ .int, .exp }));
+    try t.expectFloatLit("6.67428e-11", float(6, 0, 67428, -11, .{ .int, .fract, .exp }));
+    try t.expectFloatLit("1e6", float(1, 0, 0, 6, .{ .int, .exp }));
+    try t.expectFloatLit(".25", float(0, 0, 25, 1, .{.fract}));
+    try t.expectFloatLit(".12345e+5", float(0, 0, 12345, 5, .{ .fract, .exp }));
+    try t.expectFloatLit("1_5.", float(15, 0, 0, 1, .{.int}));
+    try t.expectFloatLit("0.15e+0_2", float(0, 0, 15, 2, .{ .int, .fract, .exp }));
+    try t.expectFloatLit("0x1p-2", float(1, 0, 0, -2, .{ .int, .exp }));
+    try t.expectFloatLit("0x2.p10", float(2, 0, 0, 10, .{ .int, .exp }));
+    try t.expectFloatLit("0x1.Fp+0", float(1, 0, 0xF, 0, .{ .int, .fract, .exp }));
+    try t.expectFloatLit("0x.8p-1", float(0, 0, 8, -1, .{ .fract, .exp }));
+    try t.expectFloatLit("0x_1FFFp-16", float(0x1FFF, 0, 0, -16, .{ .int, .exp }));
+    try t.expectFloatLit("0.00005", float(0, 4, 5, 1, .{ .int, .fract }));
 
     // Negative test cases
     try t.expectTokenTypes("0x15e-2", &.{ .int_lit, .minus, .int_lit });

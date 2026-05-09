@@ -3,29 +3,25 @@ const fs = std.fs;
 const heap = std.heap;
 const mem = std.mem;
 const fmt = std.fmt;
+const Io = std.Io;
 
 const unicode = @import("unicode_types.zig");
 const unicode_data = @embedFile("UnicodeData.txt");
 
-pub fn main() !void {
-    var alloc: heap.DebugAllocator(.{}) = .{};
-    defer {
-        _ = alloc.detectLeaks();
-        _ = alloc.deinit();
-    }
-    const a = alloc.allocator();
+pub fn main(init: std.process.Init) !void {
+    const a = init.gpa;
 
-    var args = std.process.args();
+    var args = init.minimal.args.iterate();
     _ = args.next();
     const file_name = args.next().?;
 
-    var f = try fs.cwd().createFile(file_name, .{});
-    defer f.close();
+    var f = try Io.Dir.cwd().createFile(init.io, file_name, .{});
+    defer f.close(init.io);
     var buf: [4096]u8 = undefined;
-    var wtr = f.writer(&buf);
+    var wtr = f.writer(init.io, &buf);
     defer wtr.interface.flush() catch unreachable;
 
-    var gc_to_codep = std.EnumArray(unicode.GeneralCategory, std.ArrayList(u32)).initFill(.{});
+    var gc_to_codep = std.EnumArray(unicode.GeneralCategory, std.ArrayList(u32)).initFill(.empty);
 
     var it = mem.splitScalar(u8, unicode_data, '\n');
     while (it.next()) |ln| {
@@ -38,7 +34,7 @@ pub fn main() !void {
         try gc_to_codep.getPtr(gc).append(a, codep);
     }
 
-    var final_data: std.ArrayList(unicode.CodepointGroup) = .{};
+    var final_data: std.ArrayList(unicode.CodepointGroup) = .empty;
     defer final_data.deinit(a);
 
     var gc_it = gc_to_codep.iterator();

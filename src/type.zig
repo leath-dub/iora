@@ -5,7 +5,6 @@ const common = @import("common.zig");
 const GeneralContext = @import("GeneralContext.zig");
 const tyref = @import("type_ref.zig");
 const TypeRef = tyref.TypeRef;
-const TypeVar = tyref.TypeVar;
 
 const mem = std.mem;
 
@@ -121,6 +120,11 @@ pub const Store = struct {
                     .err = try store.internImpl(e.child, false),
                 });
             },
+            .type_of => |to| {
+                return store.internDataStable(.{
+                    .type_of = try store.internImpl(to.child, false),
+                });
+            },
             .fun => |fun| {
                 var params = try scratch.alloc(Fun.Param, fun.params.len);
                 for (fun.params, 0..) |*param, i| {
@@ -233,6 +237,7 @@ pub const Data = union(enum) {
     ptr: TypeRef,
     slice: TypeRef,
     err: TypeRef,
+    type_of: TypeRef,
     sum: []SumField,
     tuple: []TypeRef,
     @"enum": [][]const u8,
@@ -257,28 +262,33 @@ pub const Data = union(enum) {
                     if (param.unwrap) {
                         try writer.writeAll("..");
                     }
-                    try formatView(store, &TypeVar{ .id = param.type }).format(writer);
+                    try formatView(store, param.type).format(writer);
                 }
                 try writer.writeByte(')');
                 if (fun.return_type != .unit) {
                     try writer.print("-> {f}", .{
-                        formatView(store, &TypeVar{ .id = fun.return_type }),
+                        formatView(store, fun.return_type),
                     });
                 }
             },
             .ptr => |child| {
                 try writer.print("*{f}", .{
-                    formatView(store, &TypeVar{ .id = child }),
+                    formatView(store, child),
                 });
             },
             .slice => |child| {
                 try writer.print("[]{f}", .{
-                    formatView(store, &TypeVar{ .id = child }),
+                    formatView(store, child),
                 });
             },
             .err => |child| {
                 try writer.print("!{f}", .{
-                    formatView(store, &TypeVar{ .id = child }),
+                    formatView(store, child),
+                });
+            },
+            .type_of => |child| {
+                try writer.print("type_of({f})", .{
+                    formatView(store, child),
                 });
             },
             .sum => |alts| {
@@ -287,7 +297,7 @@ pub const Data = union(enum) {
                     if (index != 0) {
                         try writer.writeAll("| ");
                     }
-                    try formatView(store, &TypeVar{ .id = alt.type }).format(writer);
+                    try formatView(store, alt.type).format(writer);
                 }
                 try writer.writeByte(')');
             },
@@ -297,7 +307,7 @@ pub const Data = union(enum) {
                     if (index != 0) {
                         try writer.writeAll(", ");
                     }
-                    try formatView(store, &TypeVar{ .id = alt }).format(writer);
+                    try formatView(store, alt).format(writer);
                 }
                 try writer.writeByte(')');
             },
@@ -319,7 +329,7 @@ pub const Data = union(enum) {
                     }
                     try writer.print("{s}: {f}", .{
                         field.name,
-                        formatView(store, &TypeVar{ .id = field.type }),
+                        formatView(store, field.type),
                     });
                 }
                 try writer.writeByte('}');
@@ -368,6 +378,10 @@ pub const Data = union(enum) {
                 .err => |e| {
                     hasher.update(mem.asBytes(&Data.err));
                     hasher.update(mem.asBytes(&e));
+                },
+                .type_of => |t| {
+                    hasher.update(mem.asBytes(&Data.type_of));
+                    hasher.update(mem.asBytes(&t));
                 },
                 .ptr => |p| {
                     hasher.update(mem.asBytes(&Data.ptr));
@@ -432,6 +446,7 @@ pub const Data = union(enum) {
                     }
                 },
                 .err => |e| return e == b.err,
+                .type_of => |t| return t == b.type_of,
                 .ptr => |p| return p == b.ptr,
                 .slice => |s| return s == b.slice,
                 else => {},
@@ -467,45 +482,27 @@ pub const Array = struct {
 };
 
 pub const FormatView = struct {
-    ref: *const TypeVar,
+    ref: TypeRef,
     store: *const Store,
 
     pub fn format(
         view: FormatView,
         writer: *std.Io.Writer,
     ) std.Io.Writer.Error!void {
-        switch (view.ref.*) {
+        switch (view.ref) {
             .dirty => try writer.writeAll("type with error"),
-            .ptr => |ptr| try formatView(view.store, ptr).format(writer),
             .unset => try writer.writeAll("unset type"),
-            .float => try writer.writeAll("floating point type"),
-            .int => try writer.writeAll("integer type"),
-            .inferred => try writer.writeAll("inferred name"),
-            .id => |id| switch (id) {
-                inline .u8,
-                .s8,
-                .u16,
-                .s16,
-                .u32,
-                .s32,
-                .u64,
-                .s64,
-                .f32,
-                .f64,
-                .str,
-                .type,
-                .unit => |tag| try writer.writeAll(@tagName(tag)),
-                else => |index| {
-                    try view.store.get(index).formatWithStore(view.store, writer);
-                },
+            inline .u8, .s8, .u16, .s16, .u32, .s32, .u64, .s64, .f32, .f64, .str, .unit => |tag| try writer.writeAll(@tagName(tag)),
+            else => |index| {
+                try view.store.get(index).formatWithStore(view.store, writer);
             },
         }
     }
 };
 
-pub fn formatView(store: *const Store, type_var: *const TypeVar) FormatView {
+pub fn formatView(store: *const Store, type_ref: TypeRef) FormatView {
     return .{
-        .ref = type_var,
+        .ref = type_ref,
         .store = store,
     };
 }

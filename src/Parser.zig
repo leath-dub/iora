@@ -1051,7 +1051,7 @@ fn ok(n_: anytype) @TypeOf(n_) {
 }
 
 fn zeroOrMore(p: *Parser, comptime T: type, comptime func: fn (p: *Parser) T, comptime cond: fn (p: *Parser) bool) []T {
-    var values: std.ArrayList(T) = .{};
+    var values: std.ArrayList(T) = .empty;
     defer values.deinit(p.ctx.allocator);
 
     while (cond(p)) {
@@ -1062,7 +1062,7 @@ fn zeroOrMore(p: *Parser, comptime T: type, comptime func: fn (p: *Parser) T, co
 }
 
 fn delimWithFirst(p: *Parser, comptime T: type, first: ?T, comptime func: fn (p: *Parser) T, delim: TokenType, end: ?TokenType, at_least_one_: bool) []T {
-    var values: std.ArrayList(T) = .{};
+    var values: std.ArrayList(T) = .empty;
     defer values.deinit(p.ctx.allocator);
 
     if (first) |f| {
@@ -1113,7 +1113,7 @@ fn oneOrMoreDelim(p: *Parser, comptime T: type, comptime func: fn (p: *Parser) T
 }
 
 fn oneOrMoreCsv(p: *Parser, comptime T: type, comptime func: fn (p: *Parser) T, delim: TokenType) []T {
-    var values: std.ArrayList(T) = .{};
+    var values: std.ArrayList(T) = .empty;
     defer values.deinit(p.ctx.allocator);
 
     values.append(p.ctx.allocator, func(p)) catch @panic("OOM");

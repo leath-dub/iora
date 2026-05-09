@@ -5,6 +5,7 @@ const node = @import("node.zig");
 const Code = @import("Code.zig");
 const GeneralContext = @import("GeneralContext.zig");
 const common = @import("common.zig");
+const util = @import("util.zig");
 
 const ModuleScopeResolver = @This();
 
@@ -19,7 +20,7 @@ code: *Code,
 arena: std.heap.ArenaAllocator,
 global_scope: *node.Scope,
 pass: Pass = .global_scope,
-scopes: std.SegmentedList(*node.Scope, 128) = .{},
+scopes: util.ChunkedStack(*node.Scope),
 
 pub fn init(ast: *Ast, code: *Code) ModuleScopeResolver {
     return .{
@@ -27,11 +28,13 @@ pub fn init(ast: *Ast, code: *Code) ModuleScopeResolver {
         .code = code,
         .arena = ast.ctx.createLifetime(),
         .global_scope = &ast.root.?.scope,
+        .scopes = .init(ast.ctx.allocator),
     };
 }
 
 pub fn deinit(mr: *ModuleScopeResolver) void {
     mr.arena.deinit();
+    mr.scopes.deinit();
 }
 
 pub fn enterSourceFile(mr: *ModuleScopeResolver, source_file: *node.SourceFile) void {
@@ -305,24 +308,20 @@ fn ctx(mr: *ModuleScopeResolver) *GeneralContext {
 }
 
 fn top(mr: *ModuleScopeResolver) *node.Scope {
-    return mr.scopes.at(mr.scopes.len - 1).*;
+    return mr.topOrNull().?;
 }
 
 fn topOrNull(mr: *ModuleScopeResolver) ?*node.Scope {
-    if (mr.scopes.len == 0) {
-        return null;
-    }
-    return mr.top();
+    return mr.scopes.top();
 }
 
 fn push(mr: *ModuleScopeResolver, ref: *node.Scope) void {
     ref.parent = mr.topOrNull();
-    mr.scopes.append(mr.arena.allocator(), ref) catch @panic("OOM");
+    mr.scopes.push(ref) catch @panic("OOM");
 }
 
 fn pop(mr: *ModuleScopeResolver, scope: *node.Scope) void {
-    const result = mr.scopes.pop();
-    std.debug.assert(result != null and result.? == scope);
+    std.debug.assert(mr.scopes.pop() == scope);
 }
 
 fn insert(mr: *ModuleScopeResolver, symbol_: anytype) void {

@@ -9,6 +9,7 @@ const mem = std.mem;
 
 const assert = std.debug.assert;
 
+io: Io,
 error_out: *Io.Writer,
 allocator: mem.Allocator,
 scratch: *heap.ArenaAllocator,
@@ -22,13 +23,15 @@ pub fn createLifetime(c: *Self) heap.ArenaAllocator {
 pub const Default = struct {
     var writer_buf: [4096]u8 = undefined;
 
-    error_out: fs.File.Writer,
+    io: Io,
+    error_out: Io.File.Writer,
     debug_alloc: std.heap.DebugAllocator(.{}),
     scratch: ?std.heap.ArenaAllocator = null,
 
-    pub fn init() Default {
+    pub fn init(io: Io) Default {
         return .{
-            .error_out = fs.File.stderr().writer(&writer_buf),
+            .io = io,
+            .error_out = Io.File.stderr().writer(io, &writer_buf),
             .debug_alloc = .{},
         };
     }
@@ -38,7 +41,7 @@ pub const Default = struct {
             dc.scratch.?.deinit();
         }
         if (dc.debug_alloc.deinit() == .leak) {
-            assert(!dc.debug_alloc.detectLeaks());
+            assert(dc.debug_alloc.detectLeaks() == 0);
         }
         dc.error_out.interface.flush() catch unreachable;
     }
@@ -48,6 +51,7 @@ pub const Default = struct {
             dc.scratch = heap.ArenaAllocator.init(dc.debug_alloc.allocator());
         }
         return .{
+            .io = dc.io,
             .error_out = &dc.error_out.interface,
             .allocator = dc.debug_alloc.allocator(),
             .scratch = &dc.scratch.?,
@@ -58,12 +62,14 @@ pub const Default = struct {
 pub const Testing = struct {
     var writer_buf: [4096]u8 = undefined;
 
-    error_out: fs.File.Writer,
+    io: Io,
+    error_out: Io.File.Writer,
     scratch: ?std.heap.ArenaAllocator = null,
 
-    pub fn init() Testing {
+    pub fn init(io: Io) Testing {
         return .{
-            .error_out = fs.File.stderr().writer(&writer_buf),
+            .io = io,
+            .error_out = Io.File.stderr().writer(io, &writer_buf),
         };
     }
 
@@ -76,6 +82,7 @@ pub const Testing = struct {
             tc.scratch = heap.ArenaAllocator.init(std.testing.allocator);
         }
         return .{
+            .io = tc.io,
             .error_out = &tc.error_out.interface,
             .allocator = std.testing.allocator,
             .scratch = &tc.scratch.?,

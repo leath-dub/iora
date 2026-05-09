@@ -7,7 +7,6 @@ const Token = @import("Lexer.zig").Token;
 const common = @import("common.zig");
 const tyref = @import("type_ref.zig");
 const TypeRef = tyref.TypeRef;
-const TypeVar = tyref.TypeVar;
 
 const meta = std.meta;
 const mem = std.mem;
@@ -270,44 +269,32 @@ fn comptimeCamelCase(comptime text: []const u8) std.meta.Tuple(&.{ [text.len]u8,
 
 pub const Node = blk: {
     const decls = std.meta.declarations(node);
-    var alts: [decls.len]std.builtin.Type.UnionField = undefined;
-    var tags: [decls.len]std.builtin.Type.EnumField = undefined;
+    var tags: [decls.len][]const u8 = undefined;
+    var types: [decls.len]type = undefined;
+    var attrs: [decls.len]std.builtin.Type.UnionField.Attributes = undefined;
+    var values: [decls.len]u32 = undefined;
     var count: usize = 0;
 
     for (std.meta.declarations(node)) |decl| {
         const T = @field(node, decl.name);
         if (@TypeOf(T) == type and @typeInfo(T) == .@"struct" and @hasField(T, "head") and @FieldType(T, "head") == node.Head) {
+            @setEvalBranchQuota(2000);
             const data, const len = comptimeSnakeCase(decl.name);
-            tags[count] = .{
-                .name = @ptrCast(data[0..len]),
-                .value = count,
-            };
-            alts[count] = .{
-                .name = @ptrCast(data[0..len]),
-                .type = *T,
-                .alignment = @alignOf(*T),
-            };
+            tags[count] = @ptrCast(data[0..len]);
+            values[count] = count;
+            types[count] = *T;
+            attrs[count] = .{ .@"align" = @alignOf(*T) };
             count += 1;
         }
     }
 
-    const Tag = @Type(.{
-        .@"enum" = .{
-            .tag_type = u32,
-            .decls = &.{},
-            .is_exhaustive = true,
-            .fields = tags[0..count],
-        },
-    });
-
-    break :blk @Type(.{
-        .@"union" = .{
-            .layout = .auto,
-            .tag_type = Tag,
-            .decls = &.{},
-            .fields = alts[0..count],
-        },
-    });
+    break :blk @Union(
+        .auto,
+        @Enum(u32, .exhaustive, tags[0..count], values[0..count]),
+        tags[0..count],
+        types[0..count],
+        attrs[0..count],
+    );
 };
 
 pub const ChildDisposition = enum {
@@ -361,7 +348,7 @@ pub const Dumper = struct {
             return false;
         }
         // Ship .unset type references
-        if (T == TypeRef or T == TypeVar) {
+        if (T == TypeRef) {
             if (data_ref.* == .unset) {
                 return false;
             }

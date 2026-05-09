@@ -5,6 +5,7 @@ const node = @import("node.zig");
 const Code = @import("Code.zig");
 const GeneralContext = @import("GeneralContext.zig");
 const common = @import("common.zig");
+const util = @import("util.zig");
 
 const LexicalScopeResolver = @This();
 
@@ -12,8 +13,8 @@ ast: *Ast,
 code: *Code,
 arena: std.heap.ArenaAllocator,
 global_scope: *node.Scope,
-scopes: std.SegmentedList(*node.Scope, 128) = .{},
-label_scopes: std.SegmentedList(*node.LabelScope, 128) = .{},
+scopes: util.ChunkedStack(*node.Scope),
+label_scopes: util.ChunkedStack(*node.LabelScope),
 in_global_type: bool = false,
 
 pub fn init(ast: *Ast, code: *Code) LexicalScopeResolver {
@@ -22,11 +23,15 @@ pub fn init(ast: *Ast, code: *Code) LexicalScopeResolver {
         .code = code,
         .arena = ast.ctx.createLifetime(),
         .global_scope = &ast.root.?.scope,
+        .scopes = .init(ast.ctx.allocator),
+        .label_scopes = .init(ast.ctx.allocator),
     };
 }
 
 pub fn deinit(lr: *LexicalScopeResolver) void {
     lr.arena.deinit();
+    lr.scopes.deinit();
+    lr.label_scopes.deinit();
 }
 
 pub fn enterSourceFile(lr: *LexicalScopeResolver, source_file: *node.SourceFile) void {
@@ -330,37 +335,31 @@ pub fn enterStructField(lr: *LexicalScopeResolver, struct_field: *node.StructFie
 
 fn push(lr: *LexicalScopeResolver, ref: *node.Scope) void {
     ref.parent = lr.topOrNull();
-    lr.scopes.append(lr.arena.allocator(), ref) catch @panic("OOM");
+    lr.scopes.push(ref) catch @panic("OOM");
 }
 
 fn pop(lr: *LexicalScopeResolver, scope: *node.Scope) void {
-    const result = lr.scopes.pop();
-    std.debug.assert(result != null);
-    std.debug.assert(result.? == scope);
+    std.debug.assert(lr.scopes.pop() == scope);
 }
 
 fn pushLabelScope(lr: *LexicalScopeResolver, ref: *node.LabelScope) void {
-    lr.label_scopes.append(lr.arena.allocator(), ref) catch @panic("OOM");
+    lr.label_scopes.push(ref) catch @panic("OOM");
 }
 
 fn popLabelScope(lr: *LexicalScopeResolver, scope: *node.LabelScope) void {
-    const result = lr.label_scopes.pop();
-    std.debug.assert(result != null and result.? == scope);
+    std.debug.assert(lr.label_scopes.pop() == scope);
 }
 
 fn top(lr: *LexicalScopeResolver) *node.Scope {
-    return lr.scopes.at(lr.scopes.len - 1).*;
+    return lr.topOrNull().?;
 }
 
 fn topOrNull(lr: *LexicalScopeResolver) ?*node.Scope {
-    if (lr.scopes.len == 0) {
-        return null;
-    }
-    return lr.top();
+    return lr.scopes.top();
 }
 
 fn topLabelScope(lr: *LexicalScopeResolver) *node.LabelScope {
-    return lr.label_scopes.at(lr.label_scopes.len - 1).*;
+    return lr.label_scopes.top().?;
 }
 
 fn insert(lr: *LexicalScopeResolver, symbol_: anytype) void {

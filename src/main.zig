@@ -21,10 +21,10 @@ const Cli = struct {
     input_path: []const u8,
 };
 
-fn parseArgs() error{ParseFailed}!Cli {
+fn parseArgs(init: *const std.process.Init) error{ParseFailed}!Cli {
     var cli: Cli = undefined;
 
-    var args = std.process.args();
+    var args = init.minimal.args.iterate();
     _ = args.next().?;
 
     if (args.next()) |file_arg| {
@@ -37,7 +37,7 @@ fn parseArgs() error{ParseFailed}!Cli {
     return cli;
 }
 
-fn openErrorMsg(e: fs.File.OpenError) ?[]const u8 {
+fn openErrorMsg(e: std.Io.File.OpenError) ?[]const u8 {
     return switch (e) {
         error.FileNotFound => "file not found",
         error.AccessDenied => "access denied",
@@ -59,24 +59,25 @@ fn invokeListener(ast: *Ast, code: *const Code, listener: anytype) !void {
     }
 }
 
-pub fn main() !void {
-    var default_ctx = GeneralContext.Default.init();
+pub fn main(init: std.process.Init) !void {
+    var default_ctx = GeneralContext.Default.init(init.io);
     defer default_ctx.deinit();
 
     var ctx = default_ctx.general();
 
-    const cli = parseArgs() catch std.process.exit(1);
-    const input_file = fs.cwd().openFile(cli.input_path, .{}) catch |e| {
+    const cli = parseArgs(&init) catch std.process.exit(1);
+    const input_file = std.Io.Dir.cwd().openFile(ctx.io, cli.input_path, .{}) catch |e| {
         const msg = openErrorMsg(e) orelse @errorName(e);
         log.err("opening file {s}: {s}\n", .{ cli.input_path, msg });
         std.process.exit(1);
     };
-    defer input_file.close();
+    defer input_file.close(ctx.io);
 
     var cst = ctx.createLifetime();
     defer cst.deinit();
 
-    const text = try input_file.readToEndAlloc(ctx.allocator, std.math.maxInt(usize));
+    var rdr = input_file.reader(ctx.io, &.{});
+    const text = try rdr.interface.allocRemaining(ctx.allocator, .unlimited);
     var code = try Code.init(&cst, cli.input_path, try cst.allocator().dupe(u8, text));
     ctx.allocator.free(text);
 

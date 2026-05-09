@@ -18,7 +18,7 @@ pub fn init(arena: *heap.ArenaAllocator, path: []const u8, text: []const u8) !Se
     defer std.debug.assert(scratch_alloc.deinit() != .leak);
     const alloc = scratch_alloc.allocator();
 
-    var lines: std.ArrayList(usize) = .{};
+    var lines: std.ArrayList(usize) = .empty;
 
     // Always have initial line 0
     try lines.append(alloc, 0);
