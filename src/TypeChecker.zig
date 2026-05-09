@@ -211,6 +211,46 @@ pub fn enterUnaryExpr(_: *TypeChecker, unary_expr: *node.UnaryExpr) void {
     }
 }
 
+pub fn exitUnaryExpr(tc: *TypeChecker, unary_expr: *node.UnaryExpr) void {
+    unary_expr.type_ref = unary_expr.operand.getType().*;
+
+    switch (unary_expr.op.type) {
+        .inc, .dec, .minus => {
+            const op_text = unary_expr.op.span;
+            // These only makes sense on numeric types
+            if (!unary_expr.type_ref.isNumeric()) {
+                tc.raise(
+                    unary_expr.op.offset(tc.code),
+                    "unary '{s}' can only be used on numeric types; got type {f}",
+                    .{
+                        op_text,
+                        ty.formatView(tc.type_store, unary_expr.type_ref),
+                    },
+                );
+            }
+        },
+        .amper => {
+            // Add pointer to the type
+            unary_expr.type_ref =
+                tc.type_store.internDataStable(.{ .ptr = unary_expr.type_ref });
+        },
+        .star => {
+            // Derefernce any pointer
+            const td = tc.type_store.get(unary_expr.type_ref);
+            if (td != .ptr) {
+                tc.raise(
+                    unary_expr.op.offset(tc.code),
+                    "cannot dereference value of non-pointer type {f}",
+                    .{ty.formatView(tc.type_store, unary_expr.type_ref)},
+                );
+            } else {
+                unary_expr.type_ref = td.ptr;
+            }
+        },
+        else => unreachable,
+    }
+}
+
 fn propagateSymbolType(tc: *TypeChecker, type_ref: *TypeRef, name: *const node.Ident, symbol: node.Symbol) void {
     switch (symbol.data) {
         .struct_field => |st| {
@@ -236,7 +276,7 @@ fn propagateSymbolType(tc: *TypeChecker, type_ref: *TypeRef, name: *const node.I
         inline .sub_type, .type_decl => |t| {
             type_ref.* = tc.type_store.intern(&node.Type{ .type_of = .{ .child = &t.type } });
         },
-        inline else => |foo| {
+        inline .def_decl, .fun_decl => |foo| {
             if (foo.type_ref == .unset) {
                 // This means that we resolved to a defintion which has not
                 // been visited yet. This is the case when you do:
@@ -245,7 +285,11 @@ fn propagateSymbolType(tc: *TypeChecker, type_ref: *TypeRef, name: *const node.I
                 // def foo = 10;
                 tc.raise(name.head.position, "undefined here: {s}", .{name.text()});
                 type_ref.* = .dirty;
+            } else {
+                type_ref.* = foo.type_ref;
             }
+        },
+        inline else => |foo| {
             type_ref.* = foo.type_ref;
         },
     }
@@ -258,7 +302,32 @@ pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
     const tid = call.callable.getType().*;
     const callable = tc.type_store.get(tid);
     call.type_ref = switch (callable) {
-        .fun => |fun| fun.return_type,
+        .fun => |fun| res: {
+            // Check the arguments
+            for (call.args, 0..) |arg, i| switch (arg) {
+                .expr => |ex| {
+                    const param = fun.params[i];
+                    if (param.unwrap) {
+                        common.todoNoReturn("unwrap '..' function params", .{});
+                    }
+                    const arg_type = ex.getTypeConst().*;
+                    if (param.type != arg_type) {
+                        tc.raise(
+                            ex.headConst().position,
+                            "invalid argument type {f}; parameter index {d} expects type {f}",
+                            .{
+                                ty.formatView(tc.type_store, arg_type),
+                                i,
+                                ty.formatView(tc.type_store, param.type),
+                            },
+                        );
+                    }
+                },
+                .labelled => common.todoNoReturn("labelled function params", .{}),
+                else => unreachable,
+            };
+            break :res fun.return_type;
+        },
         else => common.todoNoReturn("more callables", .{}),
     };
 }

@@ -208,7 +208,7 @@ pub const Store = struct {
         };
     }
 
-    fn internDataStable(store: *Store, data: Data) TypeRef {
+    pub fn internDataStable(store: *Store, data: Data) TypeRef {
         const res = store.internData(data);
         if (res.inserted) {
             res.freeze(data);
@@ -490,8 +490,8 @@ pub const FormatView = struct {
         writer: *std.Io.Writer,
     ) std.Io.Writer.Error!void {
         switch (view.ref) {
-            .dirty => try writer.writeAll("type with error"),
-            .unset => try writer.writeAll("unset type"),
+            .dirty => try writer.writeAll("<type with error>"),
+            .unset => try writer.writeAll("<unset type>"),
             inline .u8, .s8, .u16, .s16, .u32, .s32, .u64, .s64, .f32, .f64, .str, .unit => |tag| try writer.writeAll(@tagName(tag)),
             else => |index| {
                 try view.store.get(index).formatWithStore(view.store, writer);

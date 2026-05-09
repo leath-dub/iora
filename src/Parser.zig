@@ -645,6 +645,8 @@ fn parseBinGroup(p: *Parser, comptime prec: PrecGroup) node.Expr {
             .op = op,
             .right = right,
         }) };
+        // Hack force position of expression to be the operator
+        expr.head().position = op.offset(p.lexer.code);
     }
 
     return expr;
@@ -655,10 +657,13 @@ fn parseUnaryGroup(p: *Parser) node.Expr {
         .amper, .inc, .dec, .star, .minus => true,
         else => false,
     }) {
-        return .{ .unary = p.createInit(node.UnaryExpr, .{
+        var result: node.Expr = .{ .unary = p.createInit(node.UnaryExpr, .{
             .op = p.munch(),
             .operand = p.ast.box(ok(p.parseUnaryGroup())),
         }) };
+        // Hack force position of expression to be the operator
+        result.head().position = result.unary.op.offset(p.lexer.code);
+        return result;
     }
     return p.parsePostfixGroup();
 }

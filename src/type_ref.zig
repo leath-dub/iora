@@ -23,6 +23,11 @@ pub const TypeRef = enum(u32) {
         return std.meta.fields(TypeRef).len;
     }
 
+    pub fn isNumeric(tr: TypeRef) bool {
+        return tr.isInteger() or
+            tr.isFloatingPoint();
+    }
+
     pub fn isInteger(tr: TypeRef) bool {
         return switch (tr) {
             .u8, .s8, .u16, .s16, .u32, .s32, .u64, .s64 => true,

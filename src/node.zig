@@ -373,7 +373,7 @@ pub const Expr = union(enum) {
 
     pub fn getTypeConst(expr: *const Expr) *const TypeRef {
         return switch (expr.*) {
-            .dirty => .unset,
+            .dirty => &.unset,
             inline else => |foo| &foo.type_ref,
         };
     }

@@ -49,58 +49,46 @@ pub fn Unwrap(comptime T: type) type {
 
 pub fn ChunkedStack(comptime T: type) type {
     return struct {
+        const chunk_size: usize = 1024;
+
         const Chunk = struct {
-            data: []T,
-            len: usize,
-            cap: usize,
+            data: [chunk_size]T = undefined,
+            len: usize = 0,
             node: std.SinglyLinkedList.Node = .{},
         };
 
         chunks: std.SinglyLinkedList = .{},
-        last_capacity: usize = 1024,
 
-        // The arena is used for allocating data buffers
-        arena: std.heap.ArenaAllocator,
         // The pool is used for allocating linked list nodes
         pool: std.heap.memory_pool.Managed(Chunk),
 
         pub fn init(allocator: std.mem.Allocator) @This() {
             return .{
-                .arena = .init(allocator),
                 .pool = .init(allocator),
             };
         }
 
         pub fn deinit(s: *@This()) void {
-            s.arena.deinit();
             s.pool.deinit();
         }
 
-        fn createNewChunk(s: *@This(), capacity: usize) !*Chunk {
-            const data = try s.arena.allocator().alloc(T, capacity);
+        pub fn createNewChunk(s: *@This()) !*Chunk {
             const chunk = try s.pool.create();
-            chunk.* = .{
-                .data = data,
-                .cap = capacity,
-                .len = 0,
-                .node = .{},
-            };
+            chunk.* = .{};
             return chunk;
         }
 
         pub fn push(s: *@This(), value: T) !void {
             if (s.chunks.len() == 0) {
                 // First allocation
-                const chunk = try s.createNewChunk(s.last_capacity);
+                const chunk = try s.createNewChunk();
                 s.chunks.prepend(&chunk.node);
             }
 
             var chunk: *Chunk = @fieldParentPtr("node", s.chunks.first.?);
-            if (chunk.cap - chunk.len <= 0) {
+            if (chunk_size - chunk.len <= 0) {
                 // No room in this chunk
-                const capacity = s.last_capacity * 2;
-                chunk = try s.createNewChunk(capacity);
-                s.last_capacity = capacity;
+                chunk = try s.createNewChunk();
                 s.chunks.prepend(&chunk.node);
             }
 
