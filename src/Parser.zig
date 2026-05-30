@@ -83,13 +83,27 @@ fn parseFunDecl(p: *Parser) node.FunDecl {
     if (!p.skipIf(.lparen)) return err(fun);
     fun.params = p.zeroOrMoreDelim(node.FunParam, parseFunParam, .comma, .rparen);
     if (!p.skipIf(.rparen)) return err(fun);
-    if (p.on(.local)) {
-        _ = p.next();
-        fun.is_local = true;
+    again: switch (p.at().type) {
+        .@"extern" => {
+            _ = p.next();
+            fun.linkage = .external;
+        },
+        .intern => {
+            _ = p.next();
+            fun.linkage = .internal;
+        },
+        .arrow, .lbrace => {},
+        else => if (p.expectOneOf(.{ .@"extern", .intern }, "keyword 'extern' or 'intern'")) {
+            continue :again p.at().type;
+        } else return err(fun),
     }
     if (p.on(.arrow)) {
         _ = p.next();
         fun.return_type = p.parseType();
+    }
+    if (p.on(.semicolon)) {
+        _ = p.next();
+        return ok(fun);
     }
     fun.body = p.parseCompStmt();
     return ok(fun);
@@ -416,9 +430,18 @@ fn parseFunType(p: *Parser) node.FunType {
     if (!p.skipIf(.lparen)) return err(fun);
     fun.params = p.zeroOrMoreDelim(node.FunParam, parseFunParam, .comma, .rparen);
     if (!p.skipIf(.rparen)) return err(fun);
-    if (p.on(.local)) {
-        _ = p.next();
-        fun.is_local = true;
+    again: switch (p.at().type) {
+        .@"extern" => {
+            _ = p.next();
+            fun.linkage = .external;
+        },
+        .intern => {
+            _ = p.next();
+            fun.linkage = .internal;
+        },
+        else => if (p.expectOneOf(.{ .@"extern", .intern }, "keyword 'extern' or 'intern'")) {
+            continue :again p.at().type;
+        } else return err(fun),
     }
     if (p.on(.arrow)) {
         _ = p.next();

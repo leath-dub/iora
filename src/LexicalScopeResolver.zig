@@ -231,9 +231,7 @@ pub fn exitTypeDecl(lr: *LexicalScopeResolver, type_decl: *node.TypeDecl) void {
             const en = type_decl.type.@"enum";
             var it = en.scope.entries.iterator();
             while (it.next()) |ent| {
-                std.log.debug("before: {any}", .{ent.value_ptr.type_ctx});
                 ent.value_ptr.type_ctx = .{ .type_decl = type_decl };
-                std.log.debug("after: {any}", .{ent.value_ptr.type_ctx});
             }
         }
     }
@@ -282,7 +280,7 @@ pub fn exitSelectorType(lr: *LexicalScopeResolver, sel: *node.SelectorType) void
     };
     const field = &sel.field;
     if (res) |symbol| {
-        common.resolveSelector(symbol, field, &sel.resolves_to);
+        common.resolveTypeSelector(symbol, field, &sel.resolves_to);
     }
     if (sel.resolves_to == null) {
         lr.raise(field.head.position, "undefined: {s}", .{field.text()});
@@ -308,7 +306,13 @@ pub fn exitSelectorExpr(lr: *LexicalScopeResolver, selector_expr: *node.Selector
     };
     const field = &selector_expr.field;
     if (res) |symbol| {
-        common.resolveSelector(symbol, field, &selector_expr.resolves_to);
+        if (symbol.data == .var_decl) {
+            // This cannot be resolved at this point as we do not have the
+            // types resolved for variable declarations. Resolution like this
+            // needs to be done along with type checking in TypeChecker.zig
+            return;
+        }
+        common.resolveTypeSelector(symbol, field, &selector_expr.resolves_to);
     }
     if (selector_expr.resolves_to == null) {
         lr.raise(field.head.position, "undefined: {s}", .{field.text()});

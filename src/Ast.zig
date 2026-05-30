@@ -460,12 +460,34 @@ pub const Dumper = struct {
     }
 };
 
+// Allows you to print any subtree of the ast (useful for debugging), E.g.
+//
+// std.log.debug("\n{f}", .{
+//     Ast.Formatter(node.CallExpr) {
+//         .ctx = tc.ctx(),
+//         .node = call,
+//     },
+// });
+pub fn Formatter(comptime N: type) type {
+    return struct {
+        ctx: *GeneralContext,
+        node: *N,
+        pub fn format(f: @This(), w: *std.Io.Writer) std.Io.Writer.Error!void {
+            var dumper = Ast.Dumper.init(f.ctx, w);
+            defer dumper.deinit();
+            Ast.walk(&dumper, f.node);
+            if (dumper.err) |e| {
+                return e;
+            }
+        }
+    };
+}
+
 pub fn format(_ast: Ast, w: *std.Io.Writer) std.Io.Writer.Error!void {
     var ast = _ast;
-    var dumper = Ast.Dumper.init(ast.ctx, w);
-    defer dumper.deinit();
-    Ast.walk(&dumper, &ast.root.?);
-    if (dumper.err) |e| {
-        return e;
-    }
+    var fmt: Formatter(node.SourceFile) = .{
+        .ctx = ast.ctx,
+        .node = &ast.root.?,
+    };
+    return fmt.format(w);
 }

@@ -49,14 +49,19 @@ pub const DefDecl = struct {
     init_expr: Expr = .dirty,
 };
 
+const Linkage = enum {
+    external,
+    internal,
+};
+
 pub const FunDecl = struct {
     head: Head = .{},
     type_name: ?Ident = null,
     name: Ident = .{},
     params: []FunParam = &.{},
-    is_local: bool = false,
+    linkage: Linkage = .external,
     return_type: ?Type = null,
-    body: CompStmt = .{},
+    body: ?CompStmt = null,
     scope: Scope = .{},
     label_scope: LabelScope = .{},
     type_ref: TypeRef = .unset,
@@ -206,7 +211,7 @@ pub const TypeOfType = struct {
 
 pub const FunType = struct {
     head: Head = .{},
-    is_local: bool = false,
+    linkage: Linkage = .external,
     params: []FunParam = &.{},
     return_type: ?*Type = null,
     scope: Scope = .{},
@@ -218,6 +223,10 @@ pub const Ident = struct {
 
     pub fn text(id: Ident) []const u8 {
         return id.token.span;
+    }
+
+    pub fn at(id: Ident) Code.Offset {
+        return id.head.position;
     }
 };
 
@@ -440,6 +449,14 @@ pub const CallExprArg = union(enum) {
     labelled: LabelledExpr,
     expr: Expr,
     dirty,
+
+    pub fn at(arg: CallExprArg) Code.Offset {
+        return switch (arg) {
+            .labelled => |lab| lab.expr.headConst().position,
+            .expr => |ex| ex.headConst().position,
+            .dirty => unreachable,
+        };
+    }
 };
 
 pub const LabelledExpr = struct {

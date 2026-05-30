@@ -68,9 +68,9 @@ pub const Store = struct {
                         .dirty => unreachable,
                     };
                 }
-                const res = store.internData(.{ .sum = list });
+                const res = store.internData(.{ .sum = .init(list) });
                 if (res.inserted) {
-                    res.freeze(.{ .sum = try a.dupe(SumField, list) });
+                    res.freeze(.{ .sum = .init(try a.dupe(SumField, list)) });
                 }
                 return res.id;
             },
@@ -79,9 +79,9 @@ pub const Store = struct {
                 for (tup.types, 0..) |*subt, i| {
                     list[i] = try store.internImpl(&subt.type, false);
                 }
-                const res = store.internData(.{ .tuple = list });
+                const res = store.internData(.{ .tuple = .init(list) });
                 if (res.inserted) {
-                    res.freeze(.{ .tuple = try a.dupe(TypeRef, list) });
+                    res.freeze(.{ .tuple = .init(try a.dupe(TypeRef, list)) });
                 }
                 return res.id;
             },
@@ -93,9 +93,9 @@ pub const Store = struct {
                         .type = try store.internImpl(&f.type, false),
                     };
                 }
-                const res = store.internData(.{ .@"struct" = list });
+                const res = store.internData(.{ .@"struct" = .init(list) });
                 if (res.inserted) {
-                    res.freeze(.{ .@"struct" = try a.dupe(StructField, list) });
+                    res.freeze(.{ .@"struct" = .init(try a.dupe(StructField, list)) });
                 }
                 return res.id;
             },
@@ -104,9 +104,9 @@ pub const Store = struct {
                 for (en.alts, 0..) |alt, i| {
                     list[i] = alt.name.text();
                 }
-                const res = store.internData(.{ .@"enum" = list });
+                const res = store.internData(.{ .@"enum" = .init(list) });
                 if (res.inserted) {
-                    res.freeze(.{ .@"enum" = try a.dupe([]const u8, list) });
+                    res.freeze(.{ .@"enum" = .init(try a.dupe([]const u8, list)) });
                 }
                 return res.id;
             },
@@ -238,11 +238,18 @@ pub const Data = union(enum) {
     slice: TypeRef,
     err: TypeRef,
     type_of: TypeRef,
-    sum: []SumField,
-    tuple: []TypeRef,
-    @"enum": [][]const u8,
-    @"struct": []StructField,
+    sum: SumType,
+    tuple: TupleType,
+    @"enum": EnumType,
+    @"struct": StructType,
     primitive,
+
+    pub fn getUnderlyingType(d: Data, store: Store) Data {
+        return again: switch (d) {
+            .user => |u| continue :again store.get(u.type_ref),
+            else => |x| x,
+        };
+    }
 
     pub fn formatWithStore(
         data: Data,
@@ -264,12 +271,9 @@ pub const Data = union(enum) {
                     }
                     try formatView(store, param.type).format(writer);
                 }
-                try writer.writeByte(')');
-                if (fun.return_type != .unit) {
-                    try writer.print("-> {f}", .{
-                        formatView(store, fun.return_type),
-                    });
-                }
+                try writer.print(") -> {f}", .{
+                    formatView(store, fun.return_type),
+                });
             },
             .ptr => |child| {
                 try writer.print("*{f}", .{
@@ -291,29 +295,29 @@ pub const Data = union(enum) {
                     formatView(store, child),
                 });
             },
-            .sum => |alts| {
+            .sum => |sum| {
                 try writer.writeByte('(');
-                for (alts, 0..) |alt, index| {
+                for (sum.fields, 0..) |field, index| {
                     if (index != 0) {
                         try writer.writeAll("| ");
                     }
-                    try formatView(store, alt.type).format(writer);
+                    try formatView(store, field.type).format(writer);
                 }
                 try writer.writeByte(')');
             },
-            .tuple => |alts| {
+            .tuple => |tup| {
                 try writer.writeByte('(');
-                for (alts, 0..) |alt, index| {
+                for (tup.types, 0..) |typ, index| {
                     if (index != 0) {
                         try writer.writeAll(", ");
                     }
-                    try formatView(store, alt).format(writer);
+                    try formatView(store, typ).format(writer);
                 }
                 try writer.writeByte(')');
             },
-            .@"enum" => |enumerators| {
+            .@"enum" => |en| {
                 try writer.writeAll("enum {");
-                for (enumerators, 0..) |enumerator, index| {
+                for (en.enumerators, 0..) |enumerator, index| {
                     if (index != 0) {
                         try writer.writeAll(", ");
                     }
@@ -321,9 +325,9 @@ pub const Data = union(enum) {
                 }
                 try writer.writeByte('}');
             },
-            .@"struct" => |fields| {
+            .@"struct" => |st| {
                 try writer.writeAll("struct {");
-                for (fields, 0..) |field, index| {
+                for (st.fields, 0..) |field, index| {
                     if (index != 0) {
                         try writer.writeAll(", ");
                     }
@@ -353,26 +357,26 @@ pub const Data = union(enum) {
                     hasher.update(mem.asBytes(&fun.return_type));
                 },
                 .sum => |sum| {
-                    for (sum) |alt| {
-                        hasher.update(mem.asBytes(&alt.type));
+                    for (sum.fields) |field| {
+                        hasher.update(mem.asBytes(&field.type));
                     }
                     hasher.update(mem.asBytes(&Data.sum));
                 },
                 .tuple => |tuple| {
-                    for (tuple) |alt| {
-                        hasher.update(mem.asBytes(&alt));
+                    for (tuple.types) |typ| {
+                        hasher.update(mem.asBytes(&typ));
                     }
                     hasher.update(mem.asBytes(&Data.tuple));
                 },
                 .@"struct" => |st| {
-                    for (st) |f| {
+                    for (st.fields) |f| {
                         hasher.update(f.name);
                         hasher.update(mem.asBytes(&f.type));
                     }
                 },
                 .@"enum" => |en| {
-                    for (en) |alt| {
-                        hasher.update(alt);
+                    for (en.enumerators) |enumerator| {
+                        hasher.update(enumerator);
                     }
                 },
                 .err => |e| {
@@ -417,27 +421,27 @@ pub const Data = union(enum) {
                     return fun.return_type == b.fun.return_type;
                 },
                 .sum => |sum| {
-                    if (sum.len != b.sum.len) {
+                    if (sum.fields.len != b.sum.fields.len) {
                         return false;
                     }
-                    for (sum, b.sum) |alt_a, alt_b| {
-                        if (alt_a.type != alt_b.type) {
+                    for (sum.fields, b.sum.fields) |fa, fb| {
+                        if (fa.type != fb.type) {
                             return false;
                         }
                     }
                     return true;
                 },
                 .tuple => |tuple| {
-                    if (tuple.len != b.tuple.len) {
+                    if (tuple.types.len != b.tuple.types.len) {
                         return false;
                     }
-                    return mem.eql(TypeRef, tuple, b.tuple);
+                    return mem.eql(TypeRef, tuple.types, b.tuple.types);
                 },
                 .@"struct" => |st| {
-                    if (st.len != b.@"struct".len) {
+                    if (st.fields.len != b.@"struct".fields.len) {
                         return false;
                     }
-                    for (st, b.@"struct") |fa, fb| {
+                    for (st.fields, b.@"struct".fields) |fa, fb| {
                         if (fa.type != fb.type or
                             !mem.eql(u8, fa.name, fb.name))
                         {
@@ -452,6 +456,46 @@ pub const Data = union(enum) {
                 else => {},
             }
             return true;
+        }
+    };
+
+    pub const TupleType = struct {
+        types: []TypeRef,
+        pub fn init(types: []TypeRef) TupleType {
+            return .{ .types = types };
+        }
+    };
+
+    pub const EnumType = struct {
+        enumerators: [][]const u8,
+        pub fn init(enumerators: [][]const u8) EnumType {
+            return .{ .enumerators = enumerators };
+        }
+    };
+
+    pub const SumType = struct {
+        fields: []SumField,
+        pub fn init(fields: []SumField) SumType {
+            return .{ .fields = fields };
+        }
+    };
+
+    pub const StructType = struct {
+        fields: []StructField,
+
+        pub fn init(fields: []StructField) StructType {
+            return .{
+                .fields = fields,
+            };
+        }
+
+        pub fn get(st: StructType, field: []const u8) ?StructField {
+            for (st.fields) |f| {
+                if (std.mem.eql(u8, f.name, field)) {
+                    return f;
+                }
+            }
+            return null;
         }
     };
 };

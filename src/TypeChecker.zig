@@ -8,6 +8,7 @@ const GeneralContext = @import("GeneralContext.zig");
 const common = @import("common.zig");
 const util = @import("util.zig");
 const ty = @import("type.zig");
+const tu = @import("type_utils.zig");
 const tyref = @import("type_ref.zig");
 const TypeRef = tyref.TypeRef;
 
@@ -52,7 +53,7 @@ pub fn enterFunDecl(tc: *TypeChecker, fun_decl: *node.FunDecl) void {
         .head = .{},
         .params = fun_decl.params,
         .return_type = if (fun_decl.return_type) |*ret| ret else null,
-        .is_local = fun_decl.is_local,
+        .linkage = fun_decl.linkage,
     };
     var any_type: node.Type = .{ .fun = fun_type };
     fun_decl.type_ref = tc.type_store.intern(&any_type);
@@ -79,7 +80,7 @@ pub fn enterVarDecl(tc: *TypeChecker, var_decl: *node.VarDecl) void {
 pub fn exitVarDecl(tc: *TypeChecker, var_decl: *node.VarDecl) void {
     if (var_decl.init_expr) |*init_expr| {
         if (var_decl.type != null) {
-            tc.tryCastTo(init_expr, var_decl.type_ref);
+            tc.tryCastTo(init_expr.getType(), var_decl.type_ref);
             const rhs_type = init_expr.getType().*;
 
             if (var_decl.type_ref != rhs_type) {
@@ -101,22 +102,22 @@ pub fn exitVarDecl(tc: *TypeChecker, var_decl: *node.VarDecl) void {
     }
 }
 
-fn tryCastTo(_: *TypeChecker, expr: *node.Expr, type_ref: TypeRef) void {
-    switch (expr.getType().*) {
-        .f32 => switch (type_ref) {
-            .f32, .f64 => expr.getType().* = type_ref,
+fn tryCastTo(_: *TypeChecker, from_type: *TypeRef, to_type: TypeRef) void {
+    switch (from_type.*) {
+        .f32 => switch (to_type) {
+            .f32, .f64 => from_type.* = to_type,
             else => {},
         },
-        .f64 => switch (type_ref) {
-            .f64 => expr.getType().* = type_ref,
+        .f64 => switch (to_type) {
+            .f64 => from_type.* = to_type,
             else => {},
         },
-        .s32 => switch (type_ref) {
-            .f32, .f64 => expr.getType().* = type_ref,
+        .s32 => switch (to_type) {
+            .s64, .f32, .f64 => from_type.* = to_type,
             else => {},
         },
-        .u32 => switch (type_ref) {
-            .f64 => expr.getType().* = type_ref,
+        .u32 => switch (to_type) {
+            .s64, .u64, .f64 => from_type.* = to_type,
             else => {},
         },
         else => {},
@@ -146,7 +147,9 @@ pub fn exitTokenExpr(tc: *TypeChecker, token_expr: *node.TokenExpr) void {
             break :id .u64;
         },
         .float_lit => .f32,
-        else => unreachable,
+        else => if (tu.isBuiltinTokenType(token.type)) type_: {
+            break :type_ tc.type_store.internDataStable(.{ .type_of = tu.toBuiltinType(token.type) });
+        } else return,
     };
 }
 
@@ -166,6 +169,54 @@ pub fn exitIdentExpr(tc: *TypeChecker, ident_expr: *node.IdentExpr) void {
 
 pub fn exitSelectorExpr(tc: *TypeChecker, selector_expr: *node.SelectorExpr) void {
     if (selector_expr.resolves_to == null) {
+        // Only selecting fields on a type are resolved before this pass
+        // (in LexicalScopeResolver). We need to now resolve field access
+        // of symbols which don't resolve to types (e.g. variable declaration).
+        const lhs_t = selector_expr.value.getType().*;
+
+        const lhs_td = tc.type_store.get(lhs_t);
+        // First see if the selector is accessing a declaration of user
+        // defined type
+        const field_name = selector_expr.field.text();
+        if (lhs_td == .user) {
+            if (lhs_td.user.scope.get(field_name)) |sym| {
+                switch (sym.data) {
+                    .def_decl => |def| {
+                        selector_expr.type_ref = def.type_ref;
+                        return;
+                    },
+                    .fun_decl => |fun| {
+                        selector_expr.type_ref = fun.type_ref;
+                        return;
+                    },
+                    else => unreachable,
+                }
+            }
+        }
+
+        const canon_lhs_td = lhs_td.getUnderlyingType(tc.type_store.*);
+
+        switch (canon_lhs_td) {
+            .@"struct" => |st| {
+                if (st.get(field_name)) |field| {
+                    // Set the overall selector expression to be the 
+                    selector_expr.type_ref = field.type;
+                    return;
+                }
+            },
+            else => {},
+        }
+
+        tc.raise(
+            selector_expr.field.at(),
+            "type {f} has no field or declaration {s}",
+            .{
+                ty.formatView(tc.type_store, lhs_t),
+                field_name,
+            },
+        );
+        selector_expr.type_ref = .dirty;
+
         return;
     }
 
@@ -273,7 +324,14 @@ fn propagateSymbolType(tc: *TypeChecker, type_ref: *TypeRef, name: *const node.I
             };
             type_ref.* = tc.type_store.intern(&t);
         },
-        inline .sub_type, .type_decl => |t| {
+        .type_decl => |t| {
+            type_ref.* = tc.type_store.internDataStable(.{
+                .type_of = tc.type_store.internDataStable(.{
+                    .user = t,
+                }),
+            });
+        },
+        inline .sub_type => |t| {
             type_ref.* = tc.type_store.intern(&node.Type{ .type_of = .{ .child = &t.type } });
         },
         inline .def_decl, .fun_decl => |foo| {
@@ -300,41 +358,119 @@ fn propagateSymbolType(tc: *TypeChecker, type_ref: *TypeRef, name: *const node.I
 
 pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
     const tid = call.callable.getType().*;
+    if (tid == .dirty) {
+        call.type_ref = .dirty;
+        return;
+    }
     const callable = tc.type_store.get(tid);
     call.type_ref = switch (callable) {
         .fun => |fun| res: {
-            // Check the arguments
-            for (call.args, 0..) |arg, i| switch (arg) {
-                .expr => |ex| {
-                    const param = fun.params[i];
-                    if (param.unwrap) {
-                        common.todoNoReturn("unwrap '..' function params", .{});
-                    }
-                    const arg_type = ex.getTypeConst().*;
-                    if (param.type != arg_type) {
-                        tc.raise(
-                            ex.headConst().position,
-                            "invalid argument type {f}; parameter index {d} expects type {f}",
-                            .{
-                                ty.formatView(tc.type_store, arg_type),
-                                i,
-                                ty.formatView(tc.type_store, param.type),
-                            },
-                        );
-                    }
-                },
-                .labelled => common.todoNoReturn("labelled function params", .{}),
-                else => unreachable,
-            };
+            for (fun.params, 0..) |param, i| {
+                if (param.unwrap) {
+                    common.todoNoReturn("unwrap '..' function params", .{});
+                }
+                if (i >= call.args.len) {
+                    tc.raise(
+                        call.head.position,
+                        "missing argument at index {d} for function of type: {f}",
+                        .{
+                            i,
+                            ty.formatView(tc.type_store, tid),
+                        },
+                    );
+                    break;
+                }
+                const arg = &call.args[i];
+                switch (arg.*) {
+                    .expr => |*ex| {
+                        if (ex.getType().* != param.type) {
+                            tc.raise(
+                                ex.head().position,
+                                "invalid argument type {f}; parameter index {d} expects type {f}",
+                                .{
+                                    ty.formatView(tc.type_store, ex.getType().*),
+                                    i,
+                                    ty.formatView(tc.type_store, param.type),
+                                },
+                            );
+                        }
+                    },
+                    .labelled => common.todoNoReturn("labelled arguments", .{}),
+                    else => {},
+                }
+            }
+            if (fun.params.len < call.args.len) {
+                const first = call.args[fun.params.len];
+                tc.raise(
+                    first.at(),
+                    "extraneous arguments here; expected {d} got {d}",
+                    .{
+                        fun.params.len,
+                        call.args.len,
+                    },
+                );
+            }
             break :res fun.return_type;
         },
-        else => common.todoNoReturn("more callables", .{}),
+        .type_of => |castTo| res: {
+            if (!castTo.isBuiltin()) {
+                // This means we are trying to call a type: e.g. Point(10, 11)
+                // TODO validate the arguments
+
+                // Callable is a user defined type
+                // Could be:
+                //
+                // * Tuple
+                // * Sum type
+                // * Struct
+                // * Primitive type
+
+                // const user_data = tc.type_store.get(castTo);
+                // const canon_user_data = user_data.getUnderlyingType(tc.type_store);
+
+                break :res castTo;
+            }
+
+            // Cast expression to builtin type: e.g. `u32(10)`
+            // First make sure there is only one argument
+            var child_type: ?*TypeRef = null;
+            if (call.args.len != 1) {
+                tc.raise(call.head.position, "cast expression can only take a single argument", .{});
+                return;
+            } else {
+                child_type = switch (call.args[0]) {
+                    .expr => |*ex| ex.getType(),
+                    .labelled => common.todoNoReturn("labelled args", .{}),
+                    .dirty => return,
+                };
+            }
+
+            tc.tryCastTo(child_type.?, castTo);
+            if (child_type.?.* != castTo) {
+                tc.raise(
+                    call.head.position,
+                    "cannot cast type {f} to type {f}",
+                    .{
+                        ty.formatView(tc.type_store, child_type.?.*),
+                        ty.formatView(tc.type_store, castTo),
+                    },
+                );
+            }
+
+            break :res castTo;
+        },
+        else => {
+            common.todoNoReturn("more callables", .{});
+        },
     };
 }
 
-// Type names are resolved by PostModuleScopeResolver
 pub fn enterType(_: *TypeChecker, _: *node.Type) Ast.ChildDisposition {
     return .skip;
+}
+
+pub fn exitTypeDecl(tc: *TypeChecker, type_decl: *node.TypeDecl) void {
+    type_decl.type_ref = tc.type_store.intern(&type_decl.type);
 }
 
 fn push(tc: *TypeChecker, ref: *node.Scope) void {

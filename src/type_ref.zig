@@ -23,6 +23,10 @@ pub const TypeRef = enum(u32) {
         return std.meta.fields(TypeRef).len;
     }
 
+    pub fn isBuiltin(tr: TypeRef) bool {
+        return tr != .unset and tr != .dirty and @intFromEnum(tr) < reserved();
+    }
+
     pub fn isNumeric(tr: TypeRef) bool {
         return tr.isInteger() or
             tr.isFloatingPoint();
