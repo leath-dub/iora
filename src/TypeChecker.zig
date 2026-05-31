@@ -55,7 +55,7 @@ pub fn enterFunDecl(tc: *TypeChecker, fun_decl: *node.FunDecl) void {
         .return_type = if (fun_decl.return_type) |*ret| ret else null,
         .linkage = fun_decl.linkage,
     };
-    var any_type: node.Type = .{ .fun = fun_type };
+    const any_type: node.Type = .{ .fun = fun_type };
     fun_decl.type_ref = tc.type_store.intern(&any_type);
 }
 
@@ -70,7 +70,6 @@ pub fn exitFunParam(tc: *TypeChecker, param: *node.FunParam) void {
         switch (param_td) {
             .@"struct", .tuple, .slice => {},
             else => {
-                std.log.debug("{any}", .{param_td});
                 tc.raise(
                     param.head.position,
                     "cannot declare parameter {s} of type {f} as unpack",
@@ -563,7 +562,7 @@ const CallArgsBinder = struct {
     callable_t: TypeRef,
     param_bindings: []node.Ident,
     bind_ops: CallBindingsOps,
-    item_name: []const u8 = "parameter",
+    item_desc: []const u8 = "parameter",
 
     fn init(tc: *TypeChecker, item_name: []const u8, callable_t: TypeRef, sig: ty.Fun.Signature, param_bindings: []node.Ident) CallArgsBinder {
         return .{
@@ -576,7 +575,7 @@ const CallArgsBinder = struct {
                 sig,
                 param_bindings,
             ),
-            .item_name = item_name,
+            .item_desc = item_name,
         };
     }
 
@@ -733,12 +732,12 @@ const CallArgsBinder = struct {
                             tc.raise(
                                 ex.at(),
                                 "cannot specify {s} {s} twice",
-                                .{ c.item_name, cb.bindings()[at].name },
+                                .{ c.item_desc, cb.bindings()[at].name },
                             );
                             tc.raise(
                                 cb.bindings()[at].expr.?.at(),
                                 "note: {s} {s} already specified here",
-                                .{ c.item_name, cb.bindings()[at].name },
+                                .{ c.item_desc, cb.bindings()[at].name },
                             );
                             has_error = true;
                         },
@@ -751,7 +750,7 @@ const CallArgsBinder = struct {
                         tc.raise(
                             un.expr.at(),
                             "cannot pass unpacked argument to {s} {s}",
-                            .{ c.item_name, c.param_bindings[i].text() },
+                            .{ c.item_desc, c.param_bindings[i].text() },
                         );
                         has_error = true;
                         continue;
@@ -762,12 +761,12 @@ const CallArgsBinder = struct {
                             tc.raise(
                                 un.expr.at(),
                                 "cannot specify {s} {s} twice",
-                                .{ c.item_name, cb.bindings()[at].name },
+                                .{ c.item_desc, cb.bindings()[at].name },
                             );
                             tc.raise(
                                 cb.bindings()[at].expr.?.at(),
                                 "note: {s} {s} already specified here",
-                                .{ c.item_name, cb.bindings()[at].name },
+                                .{ c.item_desc, cb.bindings()[at].name },
                             );
                             has_error = true;
                         },
@@ -785,21 +784,21 @@ const CallArgsBinder = struct {
                             tc.raise(
                                 lab.head.position,
                                 "cannot specify {s} {s} twice",
-                                .{ c.item_name, cb.bindings()[at].name },
+                                .{ c.item_desc, cb.bindings()[at].name },
                             );
                             tc.raise(
                                 cb.bindings()[at].expr.?.at(),
                                 "note: {s} {s} is already specified here",
-                                .{ c.item_name, cb.bindings()[at].name },
+                                .{ c.item_desc, cb.bindings()[at].name },
                             );
                             has_error = true;
                         },
                         .failure => {
                             tc.raise(
                                 lab.head.position,
-                                "unknown {s} {s} of {f}",
+                                "unknown {s} {s} of '{f}'",
                                 .{
-                                    c.item_name,
+                                    c.item_desc,
                                     lab.label.text(),
                                     ty.formatView(tc.type_store, c.callable_t),
                                 },
@@ -827,7 +826,7 @@ const CallArgsBinder = struct {
                         call_at,
                         "{s} {s} of '{f}' is not specified",
                         .{
-                            c.item_name,
+                            c.item_desc,
                             binding.name,
                             ty.formatView(tc.type_store, c.callable_t),
                         },
@@ -958,7 +957,7 @@ const CallableInfo = struct {
 };
 
 fn getCallableInfo(tc: *TypeChecker, callable_t: TypeRef) CallableInfo {
-    const callable = tc.type_store.get(callable_t).getUnderlyingType(tc.type_store.*);
+    const callable = tc.type_store.get(callable_t);
     again: switch (callable) {
         .fun => |fun| {
             return .{
@@ -993,6 +992,9 @@ fn getCallableInfo(tc: *TypeChecker, callable_t: TypeRef) CallableInfo {
         },
         .type_of => |cast_to| {
             continue :again tc.type_store.get(cast_to);
+        },
+        .user => |user| {
+            continue :again tc.type_store.get(user.type_ref);
         },
         else => |x| common.todoNoReturn("{any}", .{x}),
     }
@@ -1042,10 +1044,9 @@ pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
 }
 
 pub fn enterAnonCallExpr(tc: *TypeChecker, anon_call: *node.AnonCallExpr) void {
-    anon_call.type_ref = tc.bindCall(
-        tc.type_store.internDataStable(.{
-            .type_of = anon_call.hint,
-        }), anon_call);
+    anon_call.type_ref = tc.bindCall(tc.type_store.internDataStable(.{
+        .type_of = anon_call.hint,
+    }), anon_call);
 }
 
 pub fn exitAnonCallExpr(tc: *TypeChecker, anon_call: *node.AnonCallExpr) void {
@@ -1086,7 +1087,7 @@ pub fn exitAnonCallExpr(tc: *TypeChecker, anon_call: *node.AnonCallExpr) void {
                         .{
                             ty.formatView(tc.type_store, ex_t),
                             "parameter", // TODO need to figure this out so I can change
-                                         // to "field" in case of struct and tuple
+                            // to "field" in case of struct and tuple
                             pb.text(),
                             ty.formatView(tc.type_store, callable_t),
                             ty.formatView(tc.type_store, param.type),

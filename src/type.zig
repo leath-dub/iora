@@ -26,15 +26,12 @@ pub const Store = struct {
     }
 
     pub fn intern(store: *Store, t: *const node.Type) TypeRef {
-        return store.internImpl(t, true) catch @panic("OOM");
+        defer _ = store.ctx.scratch.reset(.retain_capacity);
+        return store.internImpl(t) catch @panic("OOM");
     }
     // After the top level call to 'intern' we clear the scratch arena. This
     // allows the memory to be valid throughout recursive calls to 'internImpl`
-    fn internImpl(store: *Store, t: *const node.Type, reset: bool) !TypeRef {
-        defer if (reset) {
-            _ = store.ctx.scratch.reset(.retain_capacity);
-        };
-
+    fn internImpl(store: *Store, t: *const node.Type) !TypeRef {
         const a = store.arena.allocator();
         const scratch = store.ctx.scratch.allocator();
 
@@ -51,7 +48,7 @@ pub const Store = struct {
             },
             .coll => |coll| {
                 common.todo(coll.index_expr == null, "arrays", .{});
-                return store.internDataStable(.{ .slice = try store.internImpl(coll.value_type, false) });
+                return store.internDataStable(.{ .slice = try store.internImpl(coll.value_type) });
             },
             .sum => |sum| {
                 var list = try scratch.alloc(SumField, sum.alts.len);
@@ -59,7 +56,7 @@ pub const Store = struct {
                     list[i] = switch (alt.*) {
                         .type => |*ty| .{
                             .name = null,
-                            .type = try store.internImpl(ty, false),
+                            .type = try store.internImpl(ty),
                         },
                         .type_decl => |*td| .{
                             .name = td.name.text(),
@@ -77,7 +74,7 @@ pub const Store = struct {
             .tuple => |tup| {
                 var list = try scratch.alloc(TypeRef, tup.types.len);
                 for (tup.types, 0..) |*subt, i| {
-                    list[i] = try store.internImpl(&subt.type, false);
+                    list[i] = try store.internImpl(&subt.type);
                 }
                 const res = store.internData(.{ .tuple = .init(list) });
                 if (res.inserted) {
@@ -90,7 +87,7 @@ pub const Store = struct {
                 for (st.fields, 0..) |*f, i| {
                     list[i] = .{
                         .name = f.name.text(),
-                        .type = try store.internImpl(&f.type, false),
+                        .type = try store.internImpl(&f.type),
                     };
                 }
                 const res = store.internData(.{ .@"struct" = .init(list) });
@@ -112,31 +109,31 @@ pub const Store = struct {
             },
             .ptr => |p| {
                 return store.internDataStable(.{
-                    .ptr = try store.internImpl(p.child, false),
+                    .ptr = try store.internImpl(p.child),
                 });
             },
             .err => |e| {
                 return store.internDataStable(.{
-                    .err = try store.internImpl(e.child, false),
+                    .err = try store.internImpl(e.child),
                 });
             },
             .type_of => |to| {
                 return store.internDataStable(.{
-                    .type_of = try store.internImpl(to.child, false),
+                    .type_of = try store.internImpl(to.child),
                 });
             },
             .fun => |fun| {
                 var params = try scratch.alloc(Fun.Param, fun.params.len);
                 var bindings = try scratch.alloc(node.Ident, fun.params.len);
-                for (fun.params, 0..) |*param, i| {
+                for (fun.params, 0..) |param, i| {
                     params[i] = .{
-                        .type = try store.internImpl(&param.type, false),
+                        .type = try store.internImpl(&param.type),
                         .unpack = param.unpack,
                     };
                     bindings[i] = param.name;
                 }
                 const return_type = if (fun.return_type) |ret|
-                    try store.internImpl(ret, false)
+                    try store.internImpl(ret)
                 else
                     .unit;
                 const sig_res = store.internData(.{
@@ -176,11 +173,11 @@ pub const Store = struct {
                     .type_decl => |td| {
                         if (td.type_ref == .unset) {
                             // Make sure the type decl is full resolved
-                            td.type_ref = store.intern(&td.type);
+                            td.type_ref = try store.internImpl(&td.type);
                         }
                         return store.internDataStable(.{ .user = td });
                     },
-                    .sub_type => |subt| return store.internImpl(&subt.type, false),
+                    .sub_type => |subt| return store.internImpl(&subt.type),
                     else => {},
                 }
                 unreachable;
@@ -189,7 +186,7 @@ pub const Store = struct {
                 const resolved = sel.resolves_to.?;
                 switch (resolved.data) {
                     .type_decl => |td| return store.internDataStable(.{ .user = td }),
-                    .sub_type => |subt| return store.internImpl(&subt.type, false),
+                    .sub_type => |subt| return store.internImpl(&subt.type),
                     else => {},
                 }
                 unreachable;
