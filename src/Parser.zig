@@ -842,6 +842,7 @@ fn parseIdentExpr(p: *Parser) node.IdentExpr {
 }
 
 fn parseParenOrAnonCallExpr(p: *Parser) node.Expr {
+    const call_at = p.at().offset(p.lexer.code);
     if (!p.skipIf(.lparen)) return .dirty;
     if (p.on(.rparen)) {
         _ = p.next();
@@ -851,14 +852,20 @@ fn parseParenOrAnonCallExpr(p: *Parser) node.Expr {
     const first = p.parseCallExprArg();
     switch (first) {
         .labelled => {
-            return .{ .anon_call = p.handleAnonCallExpr(first) };
+            var call = p.handleAnonCallExpr(first);
+            call.head.position = call_at;
+            return .{ .anon_call = call };
         },
         .dirty => return .dirty,
         else => {},
     }
 
     return again: switch (p.at().type) {
-        .comma => .{ .anon_call = p.handleAnonCallExpr(first) },
+        .comma => out: {
+            var call = p.handleAnonCallExpr(first);
+            call.head.position = call_at;
+            break :out .{ .anon_call = call };
+        },
         .rparen => p.handleParenExpr(first.expr),
         else => if (p.expectOneOf(.{ .comma, .rparen }, "a parenthesized expression or anonymous call")) {
             continue :again p.at().type;
@@ -900,8 +907,8 @@ fn onLabel(p: *Parser) bool {
     const marker = p.lexer;
     const first = p.munch();
     const on_label = (first.type == .ident or
-                      first.type == .int_lit) and
-                     p.munch().type == .colon;
+        first.type == .int_lit) and
+        p.munch().type == .colon;
     p.lexer = marker;
     return on_label;
 }

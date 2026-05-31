@@ -96,6 +96,9 @@ pub fn enterVarDecl(tc: *TypeChecker, var_decl: *node.VarDecl) void {
     if (var_decl.type) |*t| {
         var_decl.type_ref = tc.type_store.intern(t);
     }
+    if (var_decl.init_expr) |*init_expr| {
+        tc.hintType(var_decl.type_ref, init_expr);
+    }
 }
 
 pub fn exitVarDecl(tc: *TypeChecker, var_decl: *node.VarDecl) void {
@@ -204,9 +207,20 @@ pub fn exitTokenExpr(tc: *TypeChecker, token_expr: *node.TokenExpr) void {
 }
 
 pub fn exitIdentExpr(tc: *TypeChecker, ident_expr: *node.IdentExpr) void {
-    if (ident_expr.is_inferred) {
+    if (ident_expr.is_inferred and ident_expr.hint != .unset) {
         // TODO
+        // const hint = tc.type_store.get(ident_expr.hint);
+        // switch (hint) {
+        //     .@"enum" => |en| {
+        //         for (en.enumerators) |enumerator| {
+        //             if (std.mem.eql(u8, enumerator, ident_expr.name.text())) {
+        //                 ident_expr.resolves_to
+        //             }
+        //         }
+        //     },
+        // }
     }
+
     if (ident_expr.resolves_to == null) {
         return;
     }
@@ -543,7 +557,7 @@ fn synthSigFromTuple(al: std.mem.Allocator, ret_t: TypeRef, tup: ty.Data.TupleTy
     };
 }
 
-const CallArgsChecker = struct {
+const CallArgsBinder = struct {
     tc: *TypeChecker,
     sig: ty.Fun.Signature,
     callable_t: TypeRef,
@@ -551,7 +565,7 @@ const CallArgsChecker = struct {
     bind_ops: CallBindingsOps,
     item_name: []const u8 = "parameter",
 
-    fn init(tc: *TypeChecker, item_name: []const u8, callable_t: TypeRef, sig: ty.Fun.Signature, param_bindings: []node.Ident) CallArgsChecker {
+    fn init(tc: *TypeChecker, item_name: []const u8, callable_t: TypeRef, sig: ty.Fun.Signature, param_bindings: []node.Ident) CallArgsBinder {
         return .{
             .tc = tc,
             .sig = sig,
@@ -566,7 +580,7 @@ const CallArgsChecker = struct {
         };
     }
 
-    fn fromFun(tc: *TypeChecker, fun_t: ty.TypeRefStrict(ty.Fun)) CallArgsChecker {
+    fn fromFun(tc: *TypeChecker, fun_t: ty.TypeRefStrict(ty.Fun)) CallArgsBinder {
         const fun = fun_t.get(tc.type_store.*);
         const sig = fun.signature.get(tc.type_store.*);
         return .{
@@ -582,7 +596,7 @@ const CallArgsChecker = struct {
         };
     }
 
-    fn check(c: *CallArgsChecker, call_at: Code.Offset, args: []node.CallExprArg) void {
+    fn bind(c: *CallArgsBinder, call_at: Code.Offset, args: []node.CallExprArg) void {
         var has_error = false;
         const cb = &c.bind_ops;
         const tc = c.tc;
@@ -619,7 +633,7 @@ const CallArgsChecker = struct {
                         const al = tc.ctx().scratch.allocator();
                         const st_sig = synthSigFromStruct(al, param.type, st);
                         const st_param_bindings = synthParamBindingsFromStruct(al, st);
-                        var sub_checker = CallArgsChecker.init(tc, "field", param.type, st_sig, st_param_bindings);
+                        var sub_binder = CallArgsBinder.init(tc, "field", param.type, st_sig, st_param_bindings);
 
                         const bound = std.math.clamp(arg_i + st.fields.len, 0, args.len);
                         const sub_args = args[arg_i..bound];
@@ -640,7 +654,7 @@ const CallArgsChecker = struct {
                         //
                         // This should be valid by just assuming that
                         // 'x' takes on it's default value
-                        sub_checker.check(arg.at(), sub_args);
+                        sub_binder.bind(arg.at(), sub_args);
 
                         // We also need to synthesize a call expression
                         // to bind to the parameter - the call expression
@@ -662,7 +676,7 @@ const CallArgsChecker = struct {
                         };
 
                         var fake_expr = tc.ast.box(node.Expr{ .call = fake_call });
-                        fake_expr.call.call_bindings = sub_checker.bind_ops.call_bindings;
+                        fake_expr.call.call_bindings = sub_binder.bind_ops.call_bindings;
 
                         std.debug.assert(cb.bindAt(i, fake_expr) == .success);
 
@@ -675,11 +689,11 @@ const CallArgsChecker = struct {
                         const al = tc.ctx().scratch.allocator();
                         const st_sig = synthSigFromTuple(al, param.type, tup);
                         const st_param_bindings = synthParamBindingsFromTuple(tc.ast, al, tup);
-                        var sub_checker = CallArgsChecker.init(tc, "field", param.type, st_sig, st_param_bindings);
+                        var sub_binder = CallArgsBinder.init(tc, "field", param.type, st_sig, st_param_bindings);
 
                         const bound = std.math.clamp(arg_i + tup.types.len, 0, args.len);
                         const sub_args = args[arg_i..bound];
-                        sub_checker.check(arg.at(), sub_args);
+                        sub_binder.bind(arg.at(), sub_args);
 
                         // We also need to synthesize a call expression
                         // to bind to the parameter - the call expression
@@ -701,7 +715,7 @@ const CallArgsChecker = struct {
                         };
 
                         var fake_expr = tc.ast.box(node.Expr{ .call = fake_call });
-                        fake_expr.call.call_bindings = sub_checker.bind_ops.call_bindings;
+                        fake_expr.call.call_bindings = sub_binder.bind_ops.call_bindings;
 
                         std.debug.assert(cb.bindAt(i, fake_expr) == .success);
 
@@ -730,20 +744,7 @@ const CallArgsChecker = struct {
                         },
                         .failure => unreachable,
                     }
-                    if (param.type != ex.getType().*) {
-                        tc.raise(
-                            ex.head().position,
-                            "invalid argument type {f}; {s} {s} of '{f}' expects type {f}",
-                            .{
-                                ty.formatView(tc.type_store, ex.getType().*),
-                                c.item_name,
-                                cb.bindings()[i].name,
-                                ty.formatView(tc.type_store, c.callable_t),
-                                ty.formatView(tc.type_store, param.type),
-                            },
-                        );
-                        has_error = true;
-                    }
+                    tc.hintType(param.type, ex);
                 },
                 .unpack => |*un| {
                     if (!param.unpack) {
@@ -772,20 +773,7 @@ const CallArgsChecker = struct {
                         },
                         .failure => unreachable,
                     }
-                    if (param.type != un.expr.getType().*) {
-                        tc.raise(
-                            un.expr.at(),
-                            "invalid argument type {f}; {s} {s} of '{f}' expects type {f}",
-                            .{
-                                ty.formatView(tc.type_store, un.expr.getType().*),
-                                c.item_name,
-                                cb.bindings()[i].name,
-                                ty.formatView(tc.type_store, c.callable_t),
-                                ty.formatView(tc.type_store, param.type),
-                            },
-                        );
-                        has_error = true;
-                    }
+                    tc.hintType(param.type, &un.expr);
                 },
                 .labelled => |*lab| {
                     var param_opt: ?ty.Fun.Param = null;
@@ -823,20 +811,7 @@ const CallArgsChecker = struct {
                         continue;
                     }
                     const param_ = param_opt.?;
-                    if (param_.type != lab.expr.getType().*) {
-                        tc.raise(
-                            lab.head.position,
-                            "invalid argument type {f}; {s} {s} of '{f}' expects type {f}",
-                            .{
-                                ty.formatView(tc.type_store, lab.expr.getType().*),
-                                c.item_name,
-                                lab.label.text(),
-                                ty.formatView(tc.type_store, c.callable_t),
-                                ty.formatView(tc.type_store, param_.type),
-                            },
-                        );
-                        has_error = true;
-                    }
+                    tc.hintType(param_.type, &lab.expr);
                 },
                 .dirty => {},
             }
@@ -863,23 +838,18 @@ const CallArgsChecker = struct {
     }
 };
 
-pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
-    const tid = call.callable.getType().*;
-    if (tid == .dirty) {
-        call.type_ref = .dirty;
-        return;
-    }
-    const callable = tc.type_store.get(tid);
-    call.type_ref = switch (callable) {
+fn bindCall(tc: *TypeChecker, call_t: TypeRef, call: anytype) TypeRef {
+    const callable = tc.type_store.get(call_t);
+    return switch (callable) {
         .fun => res: {
-            var checker = CallArgsChecker.fromFun(tc, .{ .ref = tid });
-            checker.check(call.head.position, call.args);
+            var binder = CallArgsBinder.fromFun(tc, .{ .ref = call_t });
+            binder.bind(call.head.position, call.args);
             _ = tc.ctx().scratch.reset(.retain_capacity);
-            call.call_bindings = checker.bind_ops.call_bindings;
-            break :res checker.sig.return_type;
+            call.call_bindings = binder.bind_ops.call_bindings;
+            break :res binder.sig.return_type;
         },
-        .type_of => |castTo| res: {
-            if (!castTo.isBuiltin()) {
+        .type_of => |cast_to| res: {
+            if (!cast_to.isBuiltin()) {
                 // This means we are trying to call a type: e.g. Point(10, 11)
                 // TODO validate the arguments
 
@@ -891,7 +861,7 @@ pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
                 // * Struct
                 // * Primitive type
 
-                const user_data = tc.type_store.get(castTo);
+                const user_data = tc.type_store.get(cast_to);
                 const canon_user_data = user_data.getUnderlyingType(tc.type_store.*);
 
                 switch (canon_user_data) {
@@ -899,28 +869,28 @@ pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
                         const al = tc.ctx().scratch.allocator();
                         defer _ = tc.ctx().scratch.reset(.retain_capacity);
 
-                        const st_sig = synthSigFromStruct(al, castTo, st);
+                        const st_sig = synthSigFromStruct(al, cast_to, st);
                         const st_param_bindings = synthParamBindingsFromStruct(al, st);
-                        var checker = CallArgsChecker.init(tc, "field", castTo, st_sig, st_param_bindings);
+                        var binder = CallArgsBinder.init(tc, "field", cast_to, st_sig, st_param_bindings);
 
-                        checker.check(call.head.position, call.args);
-                        call.call_bindings = checker.bind_ops.call_bindings;
+                        binder.bind(call.head.position, call.args);
+                        call.call_bindings = binder.bind_ops.call_bindings;
                     },
                     .tuple => |tup| {
                         const al = tc.ctx().scratch.allocator();
                         defer _ = tc.ctx().scratch.reset(.retain_capacity);
 
-                        const tup_sig = synthSigFromTuple(al, castTo, tup);
+                        const tup_sig = synthSigFromTuple(al, cast_to, tup);
                         const tup_param_bindings = synthParamBindingsFromTuple(tc.ast, al, tup);
-                        var checker = CallArgsChecker.init(tc, "field", castTo, tup_sig, tup_param_bindings);
+                        var binder = CallArgsBinder.init(tc, "field", cast_to, tup_sig, tup_param_bindings);
 
-                        checker.check(call.head.position, call.args);
-                        call.call_bindings = checker.bind_ops.call_bindings;
+                        binder.bind(call.head.position, call.args);
+                        call.call_bindings = binder.bind_ops.call_bindings;
                     },
                     else => {},
                 }
 
-                break :res castTo;
+                break :res cast_to;
             }
 
             // Cast expression to builtin type: e.g. `u32(10)`
@@ -928,34 +898,204 @@ pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
             var child_type: ?*TypeRef = null;
             if (call.args.len != 1) {
                 tc.raise(call.head.position, "cast expression can only take a single argument", .{});
-                return;
+                return .dirty;
             } else {
                 child_type = switch (call.args[0]) {
                     .expr => |*ex| ex.getType(),
                     .labelled => common.todoNoReturn("labelled args", .{}),
                     .unpack => common.todoNoReturn("unpack args", .{}),
-                    .dirty => return,
+                    .dirty => return .dirty,
                 };
             }
 
-            tc.tryCastTo(child_type.?, castTo);
-            if (child_type.?.* != castTo) {
+            tc.tryCastTo(child_type.?, cast_to);
+            if (child_type.?.* != cast_to) {
                 tc.raise(
                     call.head.position,
                     "cannot cast type {f} to type {f}",
                     .{
                         ty.formatView(tc.type_store, child_type.?.*),
-                        ty.formatView(tc.type_store, castTo),
+                        ty.formatView(tc.type_store, cast_to),
                     },
                 );
             }
 
-            break :res castTo;
+            break :res cast_to;
         },
         else => {
-            common.todoNoReturn("more callables", .{});
+            common.todoNoReturn("more callables: {any}", .{callable});
         },
     };
+}
+
+// By default DFS of a call expression is not ideal for type hinting as
+// when you enter the call expression you won't have resolved the lhs (callable)
+// to be able to have the type information to hint the arguments.
+//
+// This is why on entry to call expressions we just do a more fine grained
+// order of traversing the call expression so that we first resolve the
+// callable, then bind it which will push down hints. After this we walk all
+// the arguments and they should now be correctly hinted.
+
+pub fn enterCallExpr(tc: *TypeChecker, call: *node.CallExpr) Ast.ChildDisposition {
+    Ast.walk(tc, call.callable);
+    const tid = call.callable.getType().*;
+    if (tid == .dirty) {
+        call.type_ref = .dirty;
+        return .skip;
+    }
+    call.type_ref = tc.bindCall(tid, call);
+    for (call.args) |*arg| {
+        Ast.walk(tc, arg);
+    }
+    return .skip;
+}
+
+const CallableInfo = struct {
+    item_desc: []const u8,
+    signature: ty.Fun.Signature,
+    param_bindings: []node.Ident,
+};
+
+fn getCallableInfo(tc: *TypeChecker, callable_t: TypeRef) CallableInfo {
+    const callable = tc.type_store.get(callable_t).getUnderlyingType(tc.type_store.*);
+    again: switch (callable) {
+        .fun => |fun| {
+            return .{
+                .item_desc = "parameter",
+                .param_bindings = fun.bindings,
+                .signature = fun.signature.get(tc.type_store.*),
+            };
+        },
+        .@"struct" => |st| {
+            const al = tc.ctx().scratch.allocator();
+
+            const st_sig = synthSigFromStruct(al, callable_t, st);
+            const st_param_bindings = synthParamBindingsFromStruct(al, st);
+
+            return .{
+                .item_desc = "field",
+                .signature = st_sig,
+                .param_bindings = st_param_bindings,
+            };
+        },
+        .tuple => |tup| {
+            const al = tc.ctx().scratch.allocator();
+
+            const tup_sig = synthSigFromTuple(al, callable_t, tup);
+            const tup_param_bindings = synthParamBindingsFromTuple(tc.ast, al, tup);
+
+            return .{
+                .item_desc = "field",
+                .signature = tup_sig,
+                .param_bindings = tup_param_bindings,
+            };
+        },
+        .type_of => |cast_to| {
+            continue :again tc.type_store.get(cast_to);
+        },
+        else => |x| common.todoNoReturn("{any}", .{x}),
+    }
+    unreachable;
+}
+
+pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
+    if (call.call_bindings == null) {
+        return;
+    }
+
+    // Now we can actually check the arguments match to what they were
+    // bound to.
+    const cb = call.call_bindings.?;
+
+    for (cb.bindings) |b| {
+        if (b.expr == null) {
+            continue;
+        }
+
+        const ex = b.expr.?;
+        const ex_t = ex.getType().*;
+
+        const callable_t = call.callable.getType().*;
+        const callable_info = tc.getCallableInfo(callable_t);
+        defer _ = tc.ctx().scratch.reset(.retain_capacity);
+
+        for (callable_info.param_bindings, 0..) |pb, i| {
+            if (std.mem.eql(u8, b.name, pb.text())) {
+                const param = callable_info.signature.params[i];
+                if (ex_t != param.type) {
+                    tc.raise(
+                        ex.at(),
+                        "invalid argument type {f}; {s} {s} of '{f}' expects type {f}",
+                        .{
+                            ty.formatView(tc.type_store, ex_t),
+                            callable_info.item_desc,
+                            pb.text(),
+                            ty.formatView(tc.type_store, callable_t),
+                            ty.formatView(tc.type_store, param.type),
+                        },
+                    );
+                }
+            }
+        }
+    }
+}
+
+pub fn enterAnonCallExpr(tc: *TypeChecker, anon_call: *node.AnonCallExpr) void {
+    anon_call.type_ref = tc.bindCall(
+        tc.type_store.internDataStable(.{
+            .type_of = anon_call.hint,
+        }), anon_call);
+}
+
+pub fn exitAnonCallExpr(tc: *TypeChecker, anon_call: *node.AnonCallExpr) void {
+    if (anon_call.type_ref == .unset) {
+        tc.raise(
+            anon_call.head.position,
+            "could not deduce the type of anonymous call",
+            .{},
+        );
+        return;
+    }
+    if (anon_call.call_bindings == null) {
+        return;
+    }
+    // Now we can actually check the arguments match to what they were
+    // bound to.
+    const cb = anon_call.call_bindings.?;
+
+    for (cb.bindings) |b| {
+        if (b.expr == null) {
+            continue;
+        }
+
+        const ex = b.expr.?;
+        const ex_t = ex.getType().*;
+
+        const callable_t = anon_call.type_ref;
+        const callable_info = tc.getCallableInfo(callable_t);
+        defer _ = tc.ctx().scratch.reset(.retain_capacity);
+
+        for (callable_info.param_bindings, 0..) |pb, i| {
+            if (std.mem.eql(u8, b.name, pb.text())) {
+                const param = callable_info.signature.params[i];
+                if (ex_t != param.type) {
+                    tc.raise(
+                        ex.at(),
+                        "invalid argument type {f}; {s} {s} of '{f}' expects type {f}",
+                        .{
+                            ty.formatView(tc.type_store, ex_t),
+                            "parameter", // TODO need to figure this out so I can change
+                                         // to "field" in case of struct and tuple
+                            pb.text(),
+                            ty.formatView(tc.type_store, callable_t),
+                            ty.formatView(tc.type_store, param.type),
+                        },
+                    );
+                }
+            }
+        }
+    }
 }
 
 pub fn enterType(_: *TypeChecker, _: *node.Type) Ast.ChildDisposition {
@@ -1001,5 +1141,24 @@ fn insert(tc: *TypeChecker, symbol_: anytype) void {
                 tc.code.target(existing.head().position),
             },
         );
+    }
+}
+
+fn hintType(_: *TypeChecker, hint: TypeRef, ex: *node.Expr) void {
+    again: switch (ex.*) {
+        .call => |*call| {
+            if (call.callable.* == .ident_expr) {
+                continue :again call.callable.*;
+            }
+        },
+        .anon_call => |*ac| {
+            ac.hint = hint;
+        },
+        .ident_expr => |*id| {
+            if (id.is_inferred) {
+                id.hint = hint;
+            }
+        },
+        else => {},
     }
 }

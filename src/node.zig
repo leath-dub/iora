@@ -173,6 +173,7 @@ pub const TypeOrInlineDecl = union(enum) {
 pub const StructType = struct {
     head: Head = .{},
     fields: []StructField = &.{},
+    // TODO: remove uneccessary scope here.
     scope: Scope = .{},
 };
 
@@ -396,6 +397,7 @@ pub const IdentExpr = struct {
     head: Head = .{},
     name: Ident = .{},
     is_inferred: bool = false,
+    hint: TypeRef = .unset,
     type_ref: TypeRef = .unset,
     resolves_to: ?Symbol = null,
 };
@@ -477,6 +479,7 @@ pub const CallExpr = struct {
 pub const AnonCallExpr = struct {
     head: Head = .{},
     args: []CallExprArg = &.{},
+    hint: TypeRef = .unset,
     type_ref: TypeRef = .unset,
     call_bindings: ?CallBindings = null,
 };
