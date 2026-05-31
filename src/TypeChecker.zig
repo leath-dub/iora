@@ -70,6 +70,7 @@ pub fn exitFunParam(tc: *TypeChecker, param: *node.FunParam) void {
         switch (param_td) {
             .@"struct", .tuple, .slice => {},
             else => {
+                std.log.debug("{any}", .{param_td});
                 tc.raise(
                     param.head.position,
                     "cannot declare parameter {s} of type {f} as unpack",
@@ -409,18 +410,22 @@ fn propagateSymbolType(tc: *TypeChecker, type_ref: *TypeRef, name: *const node.I
 const CallBindingsOps = struct {
     call_bindings: node.CallBindings,
 
-    pub fn init(al: std.mem.Allocator, store: ty.Store, fun: ty.Fun) CallBindingsOps {
-        const sig = fun.signature.get(store);
+    pub fn init(al: std.mem.Allocator, sig: ty.Fun.Signature, param_bindings: []node.Ident) CallBindingsOps {
         var bindings_ = al.alloc(node.CallBindings.ArgBinding, sig.params.len) catch @panic("OOM");
         bindings_.len = sig.params.len;
         for (bindings_, 0..) |*binding, i| {
-            binding.* = .{ .name = fun.bindings[i].text() };
+            binding.* = .{ .name = param_bindings[i].text() };
         }
         return .{
             .call_bindings = .{
                 .bindings = bindings_,
             },
         };
+    }
+
+    pub fn fromFun(al: std.mem.Allocator, store: ty.Store, fun: ty.Fun) CallBindingsOps {
+        const sig = fun.signature.get(store);
+        return .init(al, sig, fun.bindings);
     }
 
     pub const BindResult = union(enum) {
@@ -470,54 +475,259 @@ const CallBindingsOps = struct {
     }
 };
 
-pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
-    const tid = call.callable.getType().*;
-    if (tid == .dirty) {
-        call.type_ref = .dirty;
-        return;
+fn synthParamBindingsFromStruct(al: std.mem.Allocator, st: ty.Data.StructType) []node.Ident {
+    var st_param_bindings = al.alloc(node.Ident, st.fields.len)
+        catch @panic("OOM");
+    st_param_bindings.len = st.fields.len;
+
+    for (st.fields, 0..) |f, fi| {
+        // Synthesize identifier
+        st_param_bindings[fi] = .{
+            .token = .{
+                .type = .ident,
+                .span = f.name,
+            },
+        };
     }
-    const callable = tc.type_store.get(tid);
-    call.type_ref = switch (callable) {
-        .fun => |fun| res: {
-            const sig = fun.signature.get(tc.type_store.*);
-            var cb = CallBindingsOps.init(
+
+    return st_param_bindings;
+}
+
+fn synthParamBindingsFromTuple(ast: *Ast, al: std.mem.Allocator, tup: ty.Data.TupleType) []node.Ident {
+    var tup_param_bindings = al.alloc(node.Ident, tup.types.len)
+        catch @panic("OOM");
+    tup_param_bindings.len = tup.types.len;
+
+    for (0..tup.types.len) |ti| {
+        // Synthesize identifier
+        tup_param_bindings[ti] = .{
+            .token = .{
+                .type = .ident,
+                .span = ast.num(ti),
+            },
+        };
+    }
+
+    return tup_param_bindings;
+}
+
+fn synthSigFromStruct(al: std.mem.Allocator, ret_t: TypeRef, st: ty.Data.StructType) ty.Fun.Signature {
+    var st_params = al.alloc(ty.Fun.Param, st.fields.len)
+        catch @panic("OOM");
+    st_params.len = st.fields.len;
+
+    for (st.fields, 0..) |f, fi| {
+        st_params[fi] = .{
+            .type = f.type,
+            .unpack = false,
+        };
+    }
+
+    return .{
+        .params = st_params,
+        .return_type = ret_t,
+    };
+}
+
+fn synthSigFromTuple(al: std.mem.Allocator, ret_t: TypeRef, tup: ty.Data.TupleType) ty.Fun.Signature {
+    var tup_params = al.alloc(ty.Fun.Param, tup.types.len)
+        catch @panic("OOM");
+    tup_params.len = tup.types.len;
+
+    for (tup.types, 0..) |t, ti| {
+        tup_params[ti] = .{
+            .type = t,
+            .unpack = false,
+        };
+    }
+
+    return .{
+        .params = tup_params,
+        .return_type = ret_t,
+    };
+}
+
+const CallArgsChecker = struct {
+    tc: *TypeChecker,
+    sig: ty.Fun.Signature,
+    callable_t: TypeRef,
+    param_bindings: []node.Ident,
+    bind_ops: CallBindingsOps,
+    item_name: []const u8 = "parameter",
+
+    fn init(tc: *TypeChecker, item_name: []const u8, callable_t: TypeRef, sig: ty.Fun.Signature, param_bindings: []node.Ident) CallArgsChecker {
+        return .{
+            .tc = tc,
+            .sig = sig,
+            .callable_t = callable_t,
+            .param_bindings = param_bindings,
+            .bind_ops = CallBindingsOps.init(
+                tc.ast.arena.allocator(),
+                sig,
+                param_bindings,
+            ),
+            .item_name = item_name,
+        };
+    }
+
+    fn fromFun(tc: *TypeChecker, fun_t: ty.TypeRefStrict(ty.Fun)) CallArgsChecker {
+        const fun = fun_t.get(tc.type_store.*);
+        const sig = fun.signature.get(tc.type_store.*);
+        return .{
+            .tc = tc,
+            .sig = sig,
+            .callable_t = fun_t.ref,
+            .param_bindings = fun.bindings,
+            .bind_ops = CallBindingsOps.fromFun(
                 tc.ast.arena.allocator(),
                 tc.type_store.*,
                 fun,
-            );
-            defer call.call_bindings = cb.call_bindings;
+            ),
+        };
+    }
 
-            var has_error = false;
+    fn check(c: *CallArgsChecker, call_at: Code.Offset, args: []node.CallExprArg) void {
+        var has_error = false;
+        const cb = &c.bind_ops;
+        const tc = c.tc;
+        const sig = c.sig;
 
-            for (call.args) |*arg| switch (arg.*) {
+        var arg_i: usize = 0;
+        while (arg_i < args.len) : (arg_i += 1) {
+            const arg = &args[arg_i];
+            const i_opt = cb.available();
+            if (i_opt == null) {
+                tc.raise(
+                    arg.at(),
+                    "extraneous argument",
+                    .{},
+                );
+                has_error = true;
+                break;
+            }
+            const i = i_opt.?;
+            const param = sig.params[i];
+            if (param.unpack and arg.* != .unpack) {
+                const param_td = tc.type_store
+                    .get(param.type)
+                    .getUnderlyingType(tc.type_store.*);
+                switch (param_td) {
+                    .@"struct" => |st| {
+                        // Synthesize a function signature for the
+                        // struct initialization
+                        const al = tc.ctx().scratch.allocator();
+                        const st_sig = synthSigFromStruct(al, param.type, st);
+                        const st_param_bindings = synthParamBindingsFromStruct(al, st);
+                        var sub_checker = CallArgsChecker.init(tc, "field", param.type, st_sig, st_param_bindings);
+
+                        const bound = std.math.clamp(arg_i + st.fields.len, 0, args.len);
+                        const sub_args = args[arg_i..bound];
+
+                        // TODO(default values): if we get an invalid type argument in
+                        // the sub check, it should only be invalid
+                        // if it would not also match the type of the
+                        // parameter after the packed parameter.
+                        //
+                        // This means for example if you have:
+                        //
+                        // type Foo = struct { x: u32 = 11, y: u32 };
+                        //
+                        // fun func(s: str, ..f: Foo, g: str) extern;
+                        //
+                        // ...
+                        // func("xx", y: 12, "")
+                        //
+                        // This should be valid by just assuming that
+                        // 'x' takes on it's default value
+                        sub_checker.check(arg.at(), sub_args);
+
+                        // We also need to synthesize a call expression
+                        // to bind to the parameter - the call expression
+                        // will store the binding result of the sub check
+                        const fake_token = node.TokenExpr {
+                            .token = .{
+                                .type = .synthesized,
+                                .span = "<synthesized>",
+                            },
+                            .type_ref = tc.type_store.internDataStable(.{
+                                .type_of = param.type,
+                            }),
+                        };
+
+                        const fake_call = node.CallExpr {
+                            .args = sub_args,
+                            .callable = tc.ast.box(node.Expr{ .token_expr = fake_token }),
+                            .type_ref = param.type,
+                        };
+
+                        var fake_expr = tc.ast.box(node.Expr{ .call = fake_call });
+                        fake_expr.call.call_bindings = sub_checker.bind_ops.call_bindings;
+
+                        std.debug.assert(cb.bindAt(
+                            i,
+                            fake_expr) == .success);
+
+                        arg_i = bound - 1;
+                        continue;
+                    },
+                    .tuple => |tup| {
+                        // Synthesize a function signature for the
+                        // struct initialization
+                        const al = tc.ctx().scratch.allocator();
+                        const st_sig = synthSigFromTuple(al, param.type, tup);
+                        const st_param_bindings = synthParamBindingsFromTuple(tc.ast, al, tup);
+                        var sub_checker = CallArgsChecker.init(tc, "field", param.type, st_sig, st_param_bindings);
+
+                        const bound = std.math.clamp(arg_i + tup.types.len, 0, args.len);
+                        const sub_args = args[arg_i..bound];
+                        sub_checker.check(arg.at(), sub_args);
+
+                        // We also need to synthesize a call expression
+                        // to bind to the parameter - the call expression
+                        // will store the binding result of the sub check
+                        const fake_token = node.TokenExpr {
+                            .token = .{
+                                .type = .synthesized,
+                                .span = "<synthesized>",
+                            },
+                            .type_ref = tc.type_store.internDataStable(.{
+                                .type_of = param.type,
+                            }),
+                        };
+
+                        const fake_call = node.CallExpr {
+                            .args = sub_args,
+                            .callable = tc.ast.box(node.Expr{ .token_expr = fake_token }),
+                            .type_ref = param.type,
+                        };
+
+                        var fake_expr = tc.ast.box(node.Expr{ .call = fake_call });
+                        fake_expr.call.call_bindings = sub_checker.bind_ops.call_bindings;
+
+                        std.debug.assert(cb.bindAt(
+                            i,
+                            fake_expr) == .success);
+
+                        arg_i = bound - 1;
+                        continue;
+                    },
+                    else => unreachable,
+                }
+            }
+            switch (arg.*) {
                 .expr => |*ex| {
-                    const i_opt = cb.available();
-                    if (i_opt == null) {
-                        tc.raise(
-                            ex.at(),
-                            "extraneous argument",
-                            .{},
-                        );
-                        has_error = true;
-                        break;
-                    }
-                    const i = i_opt.?;
-                    const param = sig.params[i];
-                    if (param.unpack) {
-                        common.todoNoReturn("unpack parameter", .{});
-                    }
                     switch (cb.bindAt(i, ex)) {
                         .success => {},
                         .already_bound => |at| {
                             tc.raise(
                                 ex.at(),
-                                "cannot specify parameter {s} twice",
-                                .{cb.bindings()[at].name},
+                                "cannot specify {s} {s} twice",
+                                .{c.item_name, cb.bindings()[at].name},
                             );
                             tc.raise(
                                 cb.bindings()[at].expr.?.at(),
-                                "note: parameter {s} already specified here",
-                                .{cb.bindings()[at].name},
+                                "note: {s} {s} already specified here",
+                                .{c.item_name, cb.bindings()[at].name},
                             );
                             has_error = true;
                         },
@@ -526,34 +736,24 @@ pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
                     if (param.type != ex.getType().*) {
                         tc.raise(
                             ex.head().position,
-                            "invalid argument type {f}; parameter index {d} expects type {f}",
+                            "invalid argument type {f}; {s} {s} of '{f}' expects type {f}",
                             .{
                                 ty.formatView(tc.type_store, ex.getType().*),
-                                i,
+                                c.item_name,
+                                cb.bindings()[i].name,
+                                ty.formatView(tc.type_store, c.callable_t),
                                 ty.formatView(tc.type_store, param.type),
                             },
-                        );
+                            );
                         has_error = true;
                     }
                 },
                 .unpack => |*un| {
-                    const i_opt = cb.available();
-                    if (i_opt == null) {
-                        tc.raise(
-                            un.expr.at(),
-                            "extraneous argument",
-                            .{},
-                        );
-                        has_error = true;
-                        break;
-                    }
-                    const i = i_opt.?;
-                    const param = sig.params[i];
                     if (!param.unpack) {
                         tc.raise(
                             un.expr.at(),
-                            "cannot pass unpacked argument to parameter {s}",
-                            .{fun.bindings[i].text()},
+                            "cannot pass unpacked argument to {s} {s}",
+                            .{c.item_name, c.param_bindings[i].text()},
                         );
                         has_error = true;
                         continue;
@@ -563,13 +763,13 @@ pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
                         .already_bound => |at| {
                             tc.raise(
                                 un.expr.at(),
-                                "cannot specify parameter {s} twice",
-                                .{cb.bindings()[at].name},
+                                "cannot specify {s} {s} twice",
+                                .{c.item_name, cb.bindings()[at].name},
                             );
                             tc.raise(
                                 cb.bindings()[at].expr.?.at(),
-                                "note: parameter {s} already specified here",
-                                .{cb.bindings()[at].name},
+                                "note: {s} {s} already specified here",
+                                .{c.item_name, cb.bindings()[at].name},
                             );
                             has_error = true;
                         },
@@ -578,13 +778,15 @@ pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
                     if (param.type != un.expr.getType().*) {
                         tc.raise(
                             un.expr.at(),
-                            "invalid argument type {f}; parameter index {d} expects type {f}",
+                            "invalid argument type {f}; {s} {s} of '{f}' expects type {f}",
                             .{
                                 ty.formatView(tc.type_store, un.expr.getType().*),
-                                i,
+                                c.item_name,
+                                cb.bindings()[i].name,
+                                ty.formatView(tc.type_store, c.callable_t),
                                 ty.formatView(tc.type_store, param.type),
                             },
-                        );
+                            );
                         has_error = true;
                     }
                 },
@@ -597,64 +799,87 @@ pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
                         .already_bound => |at| {
                             tc.raise(
                                 lab.head.position,
-                                "cannot specify parameter {s} twice",
-                                .{cb.bindings()[at].name},
+                                "cannot specify {s} {s} twice",
+                                .{c.item_name, cb.bindings()[at].name},
                             );
                             tc.raise(
                                 cb.bindings()[at].expr.?.at(),
-                                "note: parameter {s} already specified here",
-                                .{cb.bindings()[at].name},
+                                "note: {s} {s} is already specified here",
+                                .{c.item_name, cb.bindings()[at].name},
                             );
                             has_error = true;
                         },
                         .failure => {
                             tc.raise(
                                 lab.head.position,
-                                "unknown parameter {s} to function of type: {f}",
+                                "unknown {s} {s} of {f}",
                                 .{
+                                    c.item_name,
                                     lab.label.text(),
-                                    ty.formatView(tc.type_store, tid),
+                                    ty.formatView(tc.type_store, c.callable_t),
                                 },
-                            );
+                                );
                             has_error = true;
                         },
                     }
                     if (param_opt == null) {
                         continue;
                     }
-                    const param = param_opt.?;
-                    if (param.type != lab.expr.getType().*) {
+                    const param_ = param_opt.?;
+                    if (param_.type != lab.expr.getType().*) {
                         tc.raise(
                             lab.head.position,
-                            "invalid argument type {f}; parameter {s} expects type {f}",
+                            "invalid argument type {f}; {s} {s} of '{f}' expects type {f}",
                             .{
                                 ty.formatView(tc.type_store, lab.expr.getType().*),
+                                c.item_name,
                                 lab.label.text(),
-                                ty.formatView(tc.type_store, param.type),
+                                ty.formatView(tc.type_store, c.callable_t),
+                                ty.formatView(tc.type_store, param_.type),
                             },
                         );
                         has_error = true;
                     }
                 },
                 .dirty => {},
-            };
+            }
+        }
 
-            // Now check if the CallBindings have any unbound parameters
-            if (!has_error) { // no need to over-report we already have
-                // semantic errors so this is less likely to
-                // be accurate
-                for (cb.bindings(), 0..) |binding, i_| {
-                    if (binding.expr == null) {
-                        tc.raise(
-                            call.head.position,
-                            "parameter {s} at index {d} is not passed",
-                            .{ binding.name, i_ },
-                        );
-                    }
+        // Now check if the CallBindings have any unbound parameters
+        if (!has_error) { // no need to over-report we already have
+            // semantic errors so this is less likely to
+            // be accurate
+            for (cb.bindings()) |binding| {
+                if (binding.expr == null) {
+                    tc.raise(
+                        call_at,
+                        "{s} {s} of '{f}' is not specified",
+                        .{
+                            c.item_name,
+                            binding.name,
+                            ty.formatView(tc.type_store, c.callable_t),
+                        },
+                    );
                 }
             }
+        }
+    }
+};
 
-            break :res sig.return_type;
+pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
+    const tid = call.callable.getType().*;
+    if (tid == .dirty) {
+        call.type_ref = .dirty;
+        return;
+    }
+    const callable = tc.type_store.get(tid);
+    call.type_ref = switch (callable) {
+        .fun => res: {
+            var checker = CallArgsChecker.fromFun(tc, .{ .ref = tid });
+            checker.check(call.head.position, call.args);
+            _ = tc.ctx().scratch.reset(.retain_capacity);
+            call.call_bindings = checker.bind_ops.call_bindings;
+            break :res checker.sig.return_type;
         },
         .type_of => |castTo| res: {
             if (!castTo.isBuiltin()) {
@@ -669,8 +894,34 @@ pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
                 // * Struct
                 // * Primitive type
 
-                // const user_data = tc.type_store.get(castTo);
-                // const canon_user_data = user_data.getUnderlyingType(tc.type_store);
+                const user_data = tc.type_store.get(castTo);
+                const canon_user_data = user_data.getUnderlyingType(tc.type_store.*);
+
+                switch (canon_user_data) {
+                    .@"struct" => |st| {
+                        const al = tc.ctx().scratch.allocator();
+                        defer _ = tc.ctx().scratch.reset(.retain_capacity);
+
+                        const st_sig = synthSigFromStruct(al, castTo, st);
+                        const st_param_bindings = synthParamBindingsFromStruct(al, st);
+                        var checker = CallArgsChecker.init(tc, "field", castTo, st_sig, st_param_bindings);
+
+                        checker.check(call.head.position, call.args);
+                        call.call_bindings = checker.bind_ops.call_bindings;
+                    },
+                    .tuple => |tup| {
+                        const al = tc.ctx().scratch.allocator();
+                        defer _ = tc.ctx().scratch.reset(.retain_capacity);
+
+                        const tup_sig = synthSigFromTuple(al, castTo, tup);
+                        const tup_param_bindings = synthParamBindingsFromTuple(tc.ast, al, tup);
+                        var checker = CallArgsChecker.init(tc, "field", castTo, tup_sig, tup_param_bindings);
+
+                        checker.check(call.head.position, call.args);
+                        call.call_bindings = checker.bind_ops.call_bindings;
+                    },
+                    else => {},
+                }
 
                 break :res castTo;
             }
@@ -712,10 +963,6 @@ pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
 
 pub fn enterType(_: *TypeChecker, _: *node.Type) Ast.ChildDisposition {
     return .skip;
-}
-
-pub fn exitTypeDecl(tc: *TypeChecker, type_decl: *node.TypeDecl) void {
-    type_decl.type_ref = tc.type_store.intern(&type_decl.type);
 }
 
 fn push(tc: *TypeChecker, ref: *node.Scope) void {

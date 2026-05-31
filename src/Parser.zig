@@ -898,14 +898,17 @@ fn parseCallExprArg(p: *Parser) node.CallExprArg {
 
 fn onLabel(p: *Parser) bool {
     const marker = p.lexer;
-    const on_label = p.munch().type == .ident and p.munch().type == .colon;
+    const first = p.munch();
+    const on_label = (first.type == .ident or
+                      first.type == .int_lit) and
+                     p.munch().type == .colon;
     p.lexer = marker;
     return on_label;
 }
 
 fn parseLabelledExpr(p: *Parser) node.LabelledExpr {
     var labelled_expr = p.create(node.LabelledExpr);
-    labelled_expr.label = p.parseIdent();
+    labelled_expr.label = p.parseIdentOrInt();
     if (!p.skipIf(.colon)) return err(labelled_expr);
     labelled_expr.expr = p.parseExpr();
     return ok(labelled_expr);

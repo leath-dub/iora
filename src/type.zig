@@ -173,7 +173,13 @@ pub const Store = struct {
             .ident => |id| {
                 const resolved = id.resolves_to.?;
                 switch (resolved.data) {
-                    .type_decl => |td| return store.internDataStable(.{ .user = td }),
+                    .type_decl => |td| {
+                        if (td.type_ref == .unset) {
+                            // Make sure the type decl is full resolved
+                            td.type_ref = store.intern(&td.type);
+                        }
+                        return store.internDataStable(.{ .user = td });
+                    },
                     .sub_type => |subt| return store.internImpl(&subt.type, false),
                     else => {},
                 }
