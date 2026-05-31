@@ -63,6 +63,26 @@ pub fn exitFunDecl(tc: *TypeChecker, fun_decl: *node.FunDecl) void {
     tc.pop(&fun_decl.scope);
 }
 
+pub fn exitFunParam(tc: *TypeChecker, param: *node.FunParam) void {
+    param.type_ref = tc.type_store.intern(&param.type);
+    if (param.unpack) {
+        const param_td = tc.type_store.get(param.type_ref).getUnderlyingType(tc.type_store.*);
+        switch (param_td) {
+            .@"struct", .tuple, .slice => {},
+            else => {
+                tc.raise(
+                    param.head.position,
+                    "cannot declare parameter {s} of type {f} as unpack",
+                    .{
+                        param.name.text(),
+                        ty.formatView(tc.type_store, param.type_ref),
+                    },
+                );
+            },
+        }
+    }
+}
+
 pub fn enterCompStmt(tc: *TypeChecker, comp_stmt: *node.CompStmt) void {
     tc.push(&comp_stmt.scope);
 }
@@ -99,6 +119,35 @@ pub fn exitVarDecl(tc: *TypeChecker, var_decl: *node.VarDecl) void {
         else
             var_decl.name.head.position;
         tc.raise(pos, "variable cannot have type unit", .{});
+    }
+}
+
+pub fn enterDefDecl(tc: *TypeChecker, def_decl: *node.DefDecl) void {
+    if (def_decl.type) |*t| {
+        def_decl.type_ref = tc.type_store.intern(t);
+    }
+}
+
+pub fn exitDefDecl(tc: *TypeChecker, def_decl: *node.DefDecl) void {
+    if (def_decl.type != null) {
+        tc.tryCastTo(def_decl.init_expr.getType(), def_decl.type_ref);
+        const rhs_type = def_decl.init_expr.getType().*;
+
+        if (def_decl.type_ref != rhs_type) {
+            tc.raise(def_decl.type.?.head().position, "declared type {f} differs from right hand-side {f}", .{
+                ty.formatView(tc.type_store, def_decl.type_ref),
+                ty.formatView(tc.type_store, rhs_type),
+            });
+        }
+    }
+    def_decl.type_ref = def_decl.init_expr.getType().*;
+
+    if (def_decl.type_ref == .unit) {
+        const pos = if (def_decl.type != null)
+            def_decl.type.?.head().position
+        else
+            def_decl.name.head.position;
+        tc.raise(pos, "definition cannot have type unit", .{});
     }
 }
 
@@ -199,7 +248,7 @@ pub fn exitSelectorExpr(tc: *TypeChecker, selector_expr: *node.SelectorExpr) voi
         switch (canon_lhs_td) {
             .@"struct" => |st| {
                 if (st.get(field_name)) |field| {
-                    // Set the overall selector expression to be the 
+                    // Set the overall selector expression to be the
                     selector_expr.type_ref = field.type;
                     return;
                 }
@@ -356,6 +405,71 @@ fn propagateSymbolType(tc: *TypeChecker, type_ref: *TypeRef, name: *const node.I
 // TODO: use Ast.ChildDisposition to order tree walk so that type hints
 // are set for function parameters and binary operands.
 
+// Add methods for the CallBindings decoration
+const CallBindingsOps = struct {
+    call_bindings: node.CallBindings,
+
+    pub fn init(al: std.mem.Allocator, store: ty.Store, fun: ty.Fun) CallBindingsOps {
+        const sig = fun.signature.get(store);
+        var bindings_ = al.alloc(node.CallBindings.ArgBinding, sig.params.len) catch @panic("OOM");
+        bindings_.len = sig.params.len;
+        for (bindings_, 0..) |*binding, i| {
+            binding.* = .{ .name = fun.bindings[i].text() };
+        }
+        return .{
+            .call_bindings = .{
+                .bindings = bindings_,
+            },
+        };
+    }
+
+    pub const BindResult = union(enum) {
+        failure,
+        success: usize,
+        already_bound: usize,
+    };
+
+    pub fn bind(cb_: *CallBindingsOps, name: []const u8, expr: *node.Expr) BindResult {
+        const cb = &cb_.call_bindings;
+        for (cb.bindings, 0..) |*b, i| {
+            if (std.mem.eql(u8, b.name, name)) {
+                if (b.expr != null) {
+                    return .{ .already_bound = i };
+                }
+                b.expr = expr;
+                return .{ .success = i };
+            }
+        }
+        return .failure;
+    }
+
+    pub fn bindAt(cb_: *CallBindingsOps, index: usize, expr: *node.Expr) BindResult {
+        const cb = &cb_.call_bindings;
+        if (index >= cb.bindings.len) {
+            return .failure;
+        }
+        if (cb.bindings[index].expr != null) {
+            return .{ .already_bound = index };
+        }
+        cb.bindings[index].expr = expr;
+        return .{ .success = index };
+    }
+
+    pub fn available(cb_: CallBindingsOps) ?usize {
+        const cb = cb_.call_bindings;
+        for (cb.bindings, 0..) |b, i| {
+            if (b.expr == null) {
+                return i;
+            }
+        }
+        return null;
+    }
+
+    pub fn bindings(cb: CallBindingsOps) []node.CallBindings.ArgBinding {
+        return cb.call_bindings.bindings;
+    }
+};
+
 pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
     const tid = call.callable.getType().*;
     if (tid == .dirty) {
@@ -365,52 +479,182 @@ pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
     const callable = tc.type_store.get(tid);
     call.type_ref = switch (callable) {
         .fun => |fun| res: {
-            for (fun.params, 0..) |param, i| {
-                if (param.unwrap) {
-                    common.todoNoReturn("unwrap '..' function params", .{});
-                }
-                if (i >= call.args.len) {
-                    tc.raise(
-                        call.head.position,
-                        "missing argument at index {d} for function of type: {f}",
-                        .{
-                            i,
-                            ty.formatView(tc.type_store, tid),
-                        },
-                    );
-                    break;
-                }
-                const arg = &call.args[i];
-                switch (arg.*) {
-                    .expr => |*ex| {
-                        if (ex.getType().* != param.type) {
+            const sig = fun.signature.get(tc.type_store.*);
+            var cb = CallBindingsOps.init(
+                tc.ast.arena.allocator(),
+                tc.type_store.*,
+                fun,
+            );
+            defer call.call_bindings = cb.call_bindings;
+
+            var has_error = false;
+
+            for (call.args) |*arg| switch (arg.*) {
+                .expr => |*ex| {
+                    const i_opt = cb.available();
+                    if (i_opt == null) {
+                        tc.raise(
+                            ex.at(),
+                            "extraneous argument",
+                            .{},
+                        );
+                        has_error = true;
+                        break;
+                    }
+                    const i = i_opt.?;
+                    const param = sig.params[i];
+                    if (param.unpack) {
+                        common.todoNoReturn("unpack parameter", .{});
+                    }
+                    switch (cb.bindAt(i, ex)) {
+                        .success => {},
+                        .already_bound => |at| {
                             tc.raise(
-                                ex.head().position,
-                                "invalid argument type {f}; parameter index {d} expects type {f}",
+                                ex.at(),
+                                "cannot specify parameter {s} twice",
+                                .{cb.bindings()[at].name},
+                            );
+                            tc.raise(
+                                cb.bindings()[at].expr.?.at(),
+                                "note: parameter {s} already specified here",
+                                .{cb.bindings()[at].name},
+                            );
+                            has_error = true;
+                        },
+                        .failure => unreachable,
+                    }
+                    if (param.type != ex.getType().*) {
+                        tc.raise(
+                            ex.head().position,
+                            "invalid argument type {f}; parameter index {d} expects type {f}",
+                            .{
+                                ty.formatView(tc.type_store, ex.getType().*),
+                                i,
+                                ty.formatView(tc.type_store, param.type),
+                            },
+                        );
+                        has_error = true;
+                    }
+                },
+                .unpack => |*un| {
+                    const i_opt = cb.available();
+                    if (i_opt == null) {
+                        tc.raise(
+                            un.expr.at(),
+                            "extraneous argument",
+                            .{},
+                        );
+                        has_error = true;
+                        break;
+                    }
+                    const i = i_opt.?;
+                    const param = sig.params[i];
+                    if (!param.unpack) {
+                        tc.raise(
+                            un.expr.at(),
+                            "cannot pass unpacked argument to parameter {s}",
+                            .{fun.bindings[i].text()},
+                        );
+                        has_error = true;
+                        continue;
+                    }
+                    switch (cb.bindAt(i, &un.expr)) {
+                        .success => {},
+                        .already_bound => |at| {
+                            tc.raise(
+                                un.expr.at(),
+                                "cannot specify parameter {s} twice",
+                                .{cb.bindings()[at].name},
+                            );
+                            tc.raise(
+                                cb.bindings()[at].expr.?.at(),
+                                "note: parameter {s} already specified here",
+                                .{cb.bindings()[at].name},
+                            );
+                            has_error = true;
+                        },
+                        .failure => unreachable,
+                    }
+                    if (param.type != un.expr.getType().*) {
+                        tc.raise(
+                            un.expr.at(),
+                            "invalid argument type {f}; parameter index {d} expects type {f}",
+                            .{
+                                ty.formatView(tc.type_store, un.expr.getType().*),
+                                i,
+                                ty.formatView(tc.type_store, param.type),
+                            },
+                        );
+                        has_error = true;
+                    }
+                },
+                .labelled => |*lab| {
+                    var param_opt: ?ty.Fun.Param = null;
+                    switch (cb.bind(lab.label.text(), &lab.expr)) {
+                        .success => |at| {
+                            param_opt = sig.params[at];
+                        },
+                        .already_bound => |at| {
+                            tc.raise(
+                                lab.head.position,
+                                "cannot specify parameter {s} twice",
+                                .{cb.bindings()[at].name},
+                            );
+                            tc.raise(
+                                cb.bindings()[at].expr.?.at(),
+                                "note: parameter {s} already specified here",
+                                .{cb.bindings()[at].name},
+                            );
+                            has_error = true;
+                        },
+                        .failure => {
+                            tc.raise(
+                                lab.head.position,
+                                "unknown parameter {s} to function of type: {f}",
                                 .{
-                                    ty.formatView(tc.type_store, ex.getType().*),
-                                    i,
-                                    ty.formatView(tc.type_store, param.type),
+                                    lab.label.text(),
+                                    ty.formatView(tc.type_store, tid),
                                 },
                             );
-                        }
-                    },
-                    .labelled => common.todoNoReturn("labelled arguments", .{}),
-                    else => {},
+                            has_error = true;
+                        },
+                    }
+                    if (param_opt == null) {
+                        continue;
+                    }
+                    const param = param_opt.?;
+                    if (param.type != lab.expr.getType().*) {
+                        tc.raise(
+                            lab.head.position,
+                            "invalid argument type {f}; parameter {s} expects type {f}",
+                            .{
+                                ty.formatView(tc.type_store, lab.expr.getType().*),
+                                lab.label.text(),
+                                ty.formatView(tc.type_store, param.type),
+                            },
+                        );
+                        has_error = true;
+                    }
+                },
+                .dirty => {},
+            };
+
+            // Now check if the CallBindings have any unbound parameters
+            if (!has_error) { // no need to over-report we already have
+                // semantic errors so this is less likely to
+                // be accurate
+                for (cb.bindings(), 0..) |binding, i_| {
+                    if (binding.expr == null) {
+                        tc.raise(
+                            call.head.position,
+                            "parameter {s} at index {d} is not passed",
+                            .{ binding.name, i_ },
+                        );
+                    }
                 }
             }
-            if (fun.params.len < call.args.len) {
-                const first = call.args[fun.params.len];
-                tc.raise(
-                    first.at(),
-                    "extraneous arguments here; expected {d} got {d}",
-                    .{
-                        fun.params.len,
-                        call.args.len,
-                    },
-                );
-            }
-            break :res fun.return_type;
+
+            break :res sig.return_type;
         },
         .type_of => |castTo| res: {
             if (!castTo.isBuiltin()) {
@@ -441,6 +685,7 @@ pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
                 child_type = switch (call.args[0]) {
                     .expr => |*ex| ex.getType(),
                     .labelled => common.todoNoReturn("labelled args", .{}),
+                    .unpack => common.todoNoReturn("unpack args", .{}),
                     .dirty => return,
                 };
             }
@@ -514,11 +759,3 @@ fn insert(tc: *TypeChecker, symbol_: anytype) void {
         );
     }
 }
-
-// fn hint(tc: *TypeChecker, expr: *node.Expr, t: *node.Type) void {
-//     tc.type_hints.put(tc.ctx().allocator, expr.head(), t) catch @panic("OOM");
-// }
-//
-// fn getHint(tc: *TypeChecker, head: *node.Head) ?*node.Type {
-//     return tc.type_hints.get(head);
-// }

@@ -720,7 +720,8 @@ fn lexDecimalFloat(l: *Lexer) LexError!Token {
         }
     }
 
-    const decimal_point = l.ahead_n('.', offset);
+    const decimal_point = l.ahead_n('.', offset) and
+        !l.ahead_n('.', offset + 1); // '.' and not '..'
     if (decimal_point) {
         offset += 1;
 
@@ -1138,6 +1139,16 @@ test "Misc tests" {
         .slash,
         .int_lit,
         .semicolon,
+        .eof,
+    });
+    try t.expectTokenTypes("foo(10.., 11)", &.{
+        .ident,
+        .lparen,
+        .int_lit,
+        .ddot,
+        .comma,
+        .int_lit,
+        .rparen,
         .eof,
     });
 }

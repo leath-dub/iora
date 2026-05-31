@@ -454,7 +454,7 @@ fn parseFunParam(p: *Parser) node.FunParam {
     var param = p.create(node.FunParam);
     if (p.on(.ddot)) {
         _ = p.next();
-        param.unwrap = true;
+        param.unpack = true;
     }
     param.name = p.parseIdent();
     if (!p.skipIf(.colon)) return err(param);
@@ -886,7 +886,14 @@ fn parseCallExprArg(p: *Parser) node.CallExprArg {
     if (p.onLabel()) {
         return .{ .labelled = p.parseLabelledExpr() };
     }
-    return .{ .expr = p.parseExpr() };
+    const ex = p.parseExpr();
+    if (p.on(.ddot)) {
+        var unpack_ex = p.create(node.UnpackExpr);
+        _ = p.next();
+        unpack_ex.expr = ex;
+        return .{ .unpack = ok(unpack_ex) };
+    }
+    return .{ .expr = ex };
 }
 
 fn onLabel(p: *Parser) bool {

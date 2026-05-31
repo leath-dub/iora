@@ -71,7 +71,7 @@ pub const FunParam = struct {
     head: Head = .{},
     name: Ident = .{},
     type: Type = .dirty,
-    unwrap: bool = false,
+    unpack: bool = false,
     type_ref: TypeRef = .unset,
 };
 
@@ -386,6 +386,10 @@ pub const Expr = union(enum) {
             inline else => |foo| &foo.type_ref,
         };
     }
+
+    pub fn at(expr: Expr) Code.Offset {
+        return expr.headConst().position;
+    }
 };
 
 pub const IdentExpr = struct {
@@ -432,20 +436,53 @@ pub const BinExpr = struct {
     type_ref: TypeRef = .unset,
 };
 
+pub const CallBindings = struct {
+    bindings: []ArgBinding,
+
+    pub fn format(
+        cb: CallBindings,
+        w: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        try w.writeByte('(');
+        for (cb.bindings, 0..) |binding, i| {
+            if (i != 0) {
+                try w.writeAll(", ");
+            }
+            try w.print("{s}: ", .{binding.name});
+            if (binding.expr) |ex| {
+                try w.print("{}", .{std.meta.activeTag(ex.*)});
+            } else {
+                try w.writeAll("<unbound>");
+            }
+        }
+        try w.writeByte(')');
+    }
+
+    pub const ArgBinding = struct {
+        name: []const u8,
+        expr: ?*Expr = null,
+    };
+
+    pub const dont_walk = true;
+};
+
 pub const CallExpr = struct {
     head: Head = .{},
     callable: *Expr = undefined,
     args: []CallExprArg = &.{},
     type_ref: TypeRef = .unset,
+    call_bindings: ?CallBindings = null,
 };
 
 pub const AnonCallExpr = struct {
     head: Head = .{},
     args: []CallExprArg = &.{},
     type_ref: TypeRef = .unset,
+    call_bindings: ?CallBindings = null,
 };
 
 pub const CallExprArg = union(enum) {
+    unpack: UnpackExpr,
     labelled: LabelledExpr,
     expr: Expr,
     dirty,
@@ -454,9 +491,15 @@ pub const CallExprArg = union(enum) {
         return switch (arg) {
             .labelled => |lab| lab.expr.headConst().position,
             .expr => |ex| ex.headConst().position,
+            .unpack => |un| un.expr.headConst().position,
             .dirty => unreachable,
         };
     }
+};
+
+pub const UnpackExpr = struct {
+    head: Head = .{},
+    expr: Expr = .dirty,
 };
 
 pub const LabelledExpr = struct {

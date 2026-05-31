@@ -127,27 +127,44 @@ pub const Store = struct {
             },
             .fun => |fun| {
                 var params = try scratch.alloc(Fun.Param, fun.params.len);
+                var bindings = try scratch.alloc(node.Ident, fun.params.len);
                 for (fun.params, 0..) |*param, i| {
                     params[i] = .{
                         .type = try store.internImpl(&param.type, false),
-                        .unwrap = param.unwrap,
+                        .unpack = param.unpack,
                     };
+                    bindings[i] = param.name;
                 }
                 const return_type = if (fun.return_type) |ret|
                     try store.internImpl(ret, false)
                 else
                     .unit;
-                const res = store.internData(.{
-                    .fun = .{
+                const sig_res = store.internData(.{
+                    .fun_sig = .{
                         .params = params,
                         .return_type = return_type,
+                    },
+                });
+                if (sig_res.inserted) {
+                    sig_res.freeze(.{
+                        .fun_sig = .{
+                            .params = try a.dupe(Fun.Param, params),
+                            .return_type = return_type,
+                        },
+                    });
+                }
+                const sig = sig_res.id;
+                const res = store.internData(.{
+                    .fun = .{
+                        .signature = .{ .ref = sig },
+                        .bindings = bindings,
                     },
                 });
                 if (res.inserted) {
                     res.freeze(.{
                         .fun = .{
-                            .params = try a.dupe(Fun.Param, params),
-                            .return_type = return_type,
+                            .signature = .{ .ref = sig },
+                            .bindings = try a.dupe(node.Ident, bindings),
                         },
                     });
                 }
@@ -234,6 +251,7 @@ pub const Store = struct {
 pub const Data = union(enum) {
     user: *node.TypeDecl,
     fun: Fun,
+    fun_sig: Fun.Signature,
     ptr: TypeRef,
     slice: TypeRef,
     err: TypeRef,
@@ -261,18 +279,37 @@ pub const Data = union(enum) {
                 try writer.writeAll(user.name.text());
             },
             .fun => |fun| {
+                const sig = fun.signature.get(store.*);
                 try writer.writeAll("fun (");
-                for (fun.params, 0..) |param, index| {
+                for (sig.params, 0..) |param, index| {
                     if (index != 0) {
                         try writer.writeAll(", ");
                     }
-                    if (param.unwrap) {
+                    if (param.unpack) {
+                        try writer.writeAll("..");
+                    }
+                    try writer.print("{s}: {f}", .{
+                        fun.bindings[index].text(),
+                        formatView(store, param.type),
+                    });
+                }
+                try writer.print(") -> {f}", .{
+                    formatView(store, sig.return_type),
+                });
+            },
+            .fun_sig => |sig| {
+                try writer.writeAll("fun (");
+                for (sig.params, 0..) |param, index| {
+                    if (index != 0) {
+                        try writer.writeAll(", ");
+                    }
+                    if (param.unpack) {
                         try writer.writeAll("..");
                     }
                     try formatView(store, param.type).format(writer);
                 }
                 try writer.print(") -> {f}", .{
-                    formatView(store, fun.return_type),
+                    formatView(store, sig.return_type),
                 });
             },
             .ptr => |child| {
@@ -350,11 +387,18 @@ pub const Data = union(enum) {
             switch (data) {
                 .user => |u| return @intFromPtr(u),
                 .fun => |fun| {
-                    for (fun.params) |param| {
-                        hasher.update(mem.asBytes(&param.type));
-                        hasher.update(mem.asBytes(&param.unwrap));
+                    hasher.update(mem.asBytes(&fun.signature.ref));
+                    for (fun.bindings) |binding| {
+                        hasher.update(mem.asBytes(&binding.head.position));
+                        hasher.update(binding.text());
                     }
-                    hasher.update(mem.asBytes(&fun.return_type));
+                },
+                .fun_sig => |sig| {
+                    for (sig.params) |param| {
+                        hasher.update(mem.asBytes(&param.type));
+                        hasher.update(mem.asBytes(&param.unpack));
+                    }
+                    hasher.update(mem.asBytes(&sig.return_type));
                 },
                 .sum => |sum| {
                     for (sum.fields) |field| {
@@ -406,19 +450,34 @@ pub const Data = union(enum) {
             }
             switch (a) {
                 .user => |u| return u == b.user,
-                .fun => |fun| {
-                    if (fun.params.len != b.fun.params.len) {
+                .fun_sig => |sig| {
+                    if (sig.params.len != b.fun_sig.params.len) {
                         return false;
                     }
-                    for (fun.params, b.fun.params) |pa, pb| {
+                    for (sig.params, b.fun_sig.params) |pa, pb| {
                         if (pa.type != pb.type) {
                             return false;
                         }
-                        if (pa.unwrap != pb.unwrap) {
+                        if (pa.unpack != pb.unpack) {
                             return false;
                         }
                     }
-                    return fun.return_type == b.fun.return_type;
+                    return sig.return_type == b.fun_sig.return_type;
+                },
+                .fun => |fun| {
+                    if (fun.signature.ref != b.fun.signature.ref) {
+                        return false;
+                    }
+                    if (fun.bindings.len != b.fun.bindings.len) {
+                        return false;
+                    }
+                    for (fun.bindings, 0..) |binding, i| {
+                        const binding_b = b.fun.bindings[i];
+                        if (!std.meta.eql(binding, binding_b)) {
+                            return false;
+                        }
+                    }
+                    return true;
                 },
                 .sum => |sum| {
                     if (sum.fields.len != b.sum.fields.len) {
@@ -501,12 +560,17 @@ pub const Data = union(enum) {
 };
 
 pub const Fun = struct {
-    params: []Param,
-    return_type: TypeRef,
+    signature: TypeRefStrict(Signature),
+    bindings: []node.Ident, // param index -> name
+
+    pub const Signature = struct {
+        params: []Param,
+        return_type: TypeRef,
+    };
 
     pub const Param = struct {
         type: TypeRef,
-        unwrap: bool,
+        unpack: bool,
     };
 };
 
@@ -548,5 +612,19 @@ pub fn formatView(store: *const Store, type_ref: TypeRef) FormatView {
     return .{
         .ref = type_ref,
         .store = store,
+    };
+}
+
+pub fn TypeRefStrict(comptime T: type) type {
+    return struct {
+        ref: TypeRef,
+        pub fn get(r: @This(), store: Store) T {
+            inline for (std.meta.fields(Data)) |f| {
+                if (f.type == T) {
+                    return @field(store.get(r.ref), f.name);
+                }
+            }
+            unreachable;
+        }
     };
 }
