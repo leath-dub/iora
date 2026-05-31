@@ -911,6 +911,10 @@ fn parseLabelledExpr(p: *Parser) node.LabelledExpr {
     labelled_expr.label = p.parseIdentOrInt();
     if (!p.skipIf(.colon)) return err(labelled_expr);
     labelled_expr.expr = p.parseExpr();
+    if (p.on(.ddot)) {
+        _ = p.next();
+        labelled_expr.unpack = true;
+    }
     return ok(labelled_expr);
 }
 

@@ -59,8 +59,7 @@ pub fn deinit(ast: *Ast) void {
 pub fn num(ast: *Ast, index: usize) []const u8 {
     if (index >= ast.num_cache.items.len or ast.num_cache.items[index] == null) {
         const indexName = common.indexName(&common.index_name_buf, index);
-        ast.num_cache.ensureTotalCapacity(ast.ctx.allocator, index + 1)
-            catch @panic("OOM");
+        ast.num_cache.ensureTotalCapacity(ast.ctx.allocator, index + 1) catch @panic("OOM");
         if (ast.num_cache.items.len < index + 1) {
             const first = ast.num_cache.items.len;
             ast.num_cache.items.len = index + 1;
@@ -68,8 +67,7 @@ pub fn num(ast: *Ast, index: usize) []const u8 {
                 ast.num_cache.items[i] = null;
             }
         }
-        ast.num_cache.items[index] = ast.arena.allocator().dupe(u8, indexName)
-            catch @panic("OOM");
+        ast.num_cache.items[index] = ast.arena.allocator().dupe(u8, indexName) catch @panic("OOM");
     }
     return ast.num_cache.items[index].?;
 }

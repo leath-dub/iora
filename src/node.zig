@@ -505,6 +505,7 @@ pub const UnpackExpr = struct {
 pub const LabelledExpr = struct {
     head: Head = .{},
     label: Ident = .{},
+    unpack: bool = false,
     expr: Expr = .dirty,
 };
 

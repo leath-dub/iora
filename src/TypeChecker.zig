@@ -476,8 +476,7 @@ const CallBindingsOps = struct {
 };
 
 fn synthParamBindingsFromStruct(al: std.mem.Allocator, st: ty.Data.StructType) []node.Ident {
-    var st_param_bindings = al.alloc(node.Ident, st.fields.len)
-        catch @panic("OOM");
+    var st_param_bindings = al.alloc(node.Ident, st.fields.len) catch @panic("OOM");
     st_param_bindings.len = st.fields.len;
 
     for (st.fields, 0..) |f, fi| {
@@ -494,8 +493,7 @@ fn synthParamBindingsFromStruct(al: std.mem.Allocator, st: ty.Data.StructType) [
 }
 
 fn synthParamBindingsFromTuple(ast: *Ast, al: std.mem.Allocator, tup: ty.Data.TupleType) []node.Ident {
-    var tup_param_bindings = al.alloc(node.Ident, tup.types.len)
-        catch @panic("OOM");
+    var tup_param_bindings = al.alloc(node.Ident, tup.types.len) catch @panic("OOM");
     tup_param_bindings.len = tup.types.len;
 
     for (0..tup.types.len) |ti| {
@@ -512,8 +510,7 @@ fn synthParamBindingsFromTuple(ast: *Ast, al: std.mem.Allocator, tup: ty.Data.Tu
 }
 
 fn synthSigFromStruct(al: std.mem.Allocator, ret_t: TypeRef, st: ty.Data.StructType) ty.Fun.Signature {
-    var st_params = al.alloc(ty.Fun.Param, st.fields.len)
-        catch @panic("OOM");
+    var st_params = al.alloc(ty.Fun.Param, st.fields.len) catch @panic("OOM");
     st_params.len = st.fields.len;
 
     for (st.fields, 0..) |f, fi| {
@@ -530,8 +527,7 @@ fn synthSigFromStruct(al: std.mem.Allocator, ret_t: TypeRef, st: ty.Data.StructT
 }
 
 fn synthSigFromTuple(al: std.mem.Allocator, ret_t: TypeRef, tup: ty.Data.TupleType) ty.Fun.Signature {
-    var tup_params = al.alloc(ty.Fun.Param, tup.types.len)
-        catch @panic("OOM");
+    var tup_params = al.alloc(ty.Fun.Param, tup.types.len) catch @panic("OOM");
     tup_params.len = tup.types.len;
 
     for (tup.types, 0..) |t, ti| {
@@ -607,7 +603,12 @@ const CallArgsChecker = struct {
             }
             const i = i_opt.?;
             const param = sig.params[i];
-            if (param.unpack and arg.* != .unpack) {
+            const arg_unpack = switch (arg.*) {
+                .unpack => true,
+                .labelled => |lab| lab.unpack,
+                else => false,
+            };
+            if (param.unpack and !arg_unpack) {
                 const param_td = tc.type_store
                     .get(param.type)
                     .getUnderlyingType(tc.type_store.*);
@@ -644,7 +645,7 @@ const CallArgsChecker = struct {
                         // We also need to synthesize a call expression
                         // to bind to the parameter - the call expression
                         // will store the binding result of the sub check
-                        const fake_token = node.TokenExpr {
+                        const fake_token = node.TokenExpr{
                             .token = .{
                                 .type = .synthesized,
                                 .span = "<synthesized>",
@@ -654,7 +655,7 @@ const CallArgsChecker = struct {
                             }),
                         };
 
-                        const fake_call = node.CallExpr {
+                        const fake_call = node.CallExpr{
                             .args = sub_args,
                             .callable = tc.ast.box(node.Expr{ .token_expr = fake_token }),
                             .type_ref = param.type,
@@ -663,9 +664,7 @@ const CallArgsChecker = struct {
                         var fake_expr = tc.ast.box(node.Expr{ .call = fake_call });
                         fake_expr.call.call_bindings = sub_checker.bind_ops.call_bindings;
 
-                        std.debug.assert(cb.bindAt(
-                            i,
-                            fake_expr) == .success);
+                        std.debug.assert(cb.bindAt(i, fake_expr) == .success);
 
                         arg_i = bound - 1;
                         continue;
@@ -685,7 +684,7 @@ const CallArgsChecker = struct {
                         // We also need to synthesize a call expression
                         // to bind to the parameter - the call expression
                         // will store the binding result of the sub check
-                        const fake_token = node.TokenExpr {
+                        const fake_token = node.TokenExpr{
                             .token = .{
                                 .type = .synthesized,
                                 .span = "<synthesized>",
@@ -695,7 +694,7 @@ const CallArgsChecker = struct {
                             }),
                         };
 
-                        const fake_call = node.CallExpr {
+                        const fake_call = node.CallExpr{
                             .args = sub_args,
                             .callable = tc.ast.box(node.Expr{ .token_expr = fake_token }),
                             .type_ref = param.type,
@@ -704,9 +703,7 @@ const CallArgsChecker = struct {
                         var fake_expr = tc.ast.box(node.Expr{ .call = fake_call });
                         fake_expr.call.call_bindings = sub_checker.bind_ops.call_bindings;
 
-                        std.debug.assert(cb.bindAt(
-                            i,
-                            fake_expr) == .success);
+                        std.debug.assert(cb.bindAt(i, fake_expr) == .success);
 
                         arg_i = bound - 1;
                         continue;
@@ -722,12 +719,12 @@ const CallArgsChecker = struct {
                             tc.raise(
                                 ex.at(),
                                 "cannot specify {s} {s} twice",
-                                .{c.item_name, cb.bindings()[at].name},
+                                .{ c.item_name, cb.bindings()[at].name },
                             );
                             tc.raise(
                                 cb.bindings()[at].expr.?.at(),
                                 "note: {s} {s} already specified here",
-                                .{c.item_name, cb.bindings()[at].name},
+                                .{ c.item_name, cb.bindings()[at].name },
                             );
                             has_error = true;
                         },
@@ -744,7 +741,7 @@ const CallArgsChecker = struct {
                                 ty.formatView(tc.type_store, c.callable_t),
                                 ty.formatView(tc.type_store, param.type),
                             },
-                            );
+                        );
                         has_error = true;
                     }
                 },
@@ -753,7 +750,7 @@ const CallArgsChecker = struct {
                         tc.raise(
                             un.expr.at(),
                             "cannot pass unpacked argument to {s} {s}",
-                            .{c.item_name, c.param_bindings[i].text()},
+                            .{ c.item_name, c.param_bindings[i].text() },
                         );
                         has_error = true;
                         continue;
@@ -764,12 +761,12 @@ const CallArgsChecker = struct {
                             tc.raise(
                                 un.expr.at(),
                                 "cannot specify {s} {s} twice",
-                                .{c.item_name, cb.bindings()[at].name},
+                                .{ c.item_name, cb.bindings()[at].name },
                             );
                             tc.raise(
                                 cb.bindings()[at].expr.?.at(),
                                 "note: {s} {s} already specified here",
-                                .{c.item_name, cb.bindings()[at].name},
+                                .{ c.item_name, cb.bindings()[at].name },
                             );
                             has_error = true;
                         },
@@ -786,7 +783,7 @@ const CallArgsChecker = struct {
                                 ty.formatView(tc.type_store, c.callable_t),
                                 ty.formatView(tc.type_store, param.type),
                             },
-                            );
+                        );
                         has_error = true;
                     }
                 },
@@ -800,12 +797,12 @@ const CallArgsChecker = struct {
                             tc.raise(
                                 lab.head.position,
                                 "cannot specify {s} {s} twice",
-                                .{c.item_name, cb.bindings()[at].name},
+                                .{ c.item_name, cb.bindings()[at].name },
                             );
                             tc.raise(
                                 cb.bindings()[at].expr.?.at(),
                                 "note: {s} {s} is already specified here",
-                                .{c.item_name, cb.bindings()[at].name},
+                                .{ c.item_name, cb.bindings()[at].name },
                             );
                             has_error = true;
                         },
@@ -818,7 +815,7 @@ const CallArgsChecker = struct {
                                     lab.label.text(),
                                     ty.formatView(tc.type_store, c.callable_t),
                                 },
-                                );
+                            );
                             has_error = true;
                         },
                     }
