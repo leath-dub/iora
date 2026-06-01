@@ -91,6 +91,15 @@ pub fn exitCompStmt(tc: *TypeChecker, comp_stmt: *node.CompStmt) void {
     tc.pop(&comp_stmt.scope);
 }
 
+pub fn exitTypeDecl(tc: *TypeChecker, type_decl: *node.TypeDecl) void {
+    type_decl.type_ref = tc.type_store.intern(&type_decl.type);
+}
+
+
+pub fn exitStructField(tc: *TypeChecker, struct_field: *node.StructField) void {
+    struct_field.type_ref = tc.type_store.intern(&struct_field.type);
+}
+
 pub fn enterVarDecl(tc: *TypeChecker, var_decl: *node.VarDecl) void {
     if (var_decl.type) |*t| {
         var_decl.type_ref = tc.type_store.intern(t);
@@ -207,17 +216,43 @@ pub fn exitTokenExpr(tc: *TypeChecker, token_expr: *node.TokenExpr) void {
 
 pub fn exitIdentExpr(tc: *TypeChecker, ident_expr: *node.IdentExpr) void {
     if (ident_expr.is_inferred and ident_expr.hint != .unset) {
-        // TODO
-        // const hint = tc.type_store.get(ident_expr.hint);
-        // switch (hint) {
-        //     .@"enum" => |en| {
-        //         for (en.enumerators) |enumerator| {
-        //             if (std.mem.eql(u8, enumerator, ident_expr.name.text())) {
-        //                 ident_expr.resolves_to
-        //             }
-        //         }
-        //     },
-        // }
+        const hint = tc.type_store.get(ident_expr.hint);
+        again: switch (hint) {
+            .user => |td| {
+                if (td.scope.get(ident_expr.name.text())) |sym| {
+                    ident_expr.type_ref = switch (sym.data) {
+                        .enumerator => unreachable,
+                        inline else => |x| x.type_ref,
+                    };
+                    return;
+                }
+                continue :again tc.type_store.get(td.type_ref);
+            },
+            .@"enum" => |en| {
+                for (en.enumerators) |enumerator| {
+                    if (std.mem.eql(u8, enumerator, ident_expr.name.text())) {
+                        break :again;
+                    }
+                }
+                tc.raise(
+                    ident_expr.head.position,
+                    "undefined enumerator {s} of hinted: {f}",
+                    .{
+                        ident_expr.name.text(),
+                        ty.formatView(tc.type_store, ident_expr.hint),
+                    },
+                );
+            },
+            else => {
+                tc.raise(
+                    ident_expr.head.position,
+                    "undefined {s} of hinted: {f}",
+                    .{ ident_expr.name.text(), ty.formatView(tc.type_store, ident_expr.hint) },
+                );
+            },
+        }
+        ident_expr.type_ref = ident_expr.hint;
+        return;
     }
 
     if (ident_expr.resolves_to == null) {
@@ -556,7 +591,7 @@ fn synthSigFromTuple(al: std.mem.Allocator, ret_t: TypeRef, tup: ty.Data.TupleTy
     };
 }
 
-const CallArgsBinder = struct {
+const CallArgBinder = struct {
     tc: *TypeChecker,
     sig: ty.Fun.Signature,
     callable_t: TypeRef,
@@ -564,7 +599,7 @@ const CallArgsBinder = struct {
     bind_ops: CallBindingsOps,
     item_desc: []const u8 = "parameter",
 
-    fn init(tc: *TypeChecker, item_name: []const u8, callable_t: TypeRef, sig: ty.Fun.Signature, param_bindings: []node.Ident) CallArgsBinder {
+    fn init(tc: *TypeChecker, item_name: []const u8, callable_t: TypeRef, sig: ty.Fun.Signature, param_bindings: []node.Ident) CallArgBinder {
         return .{
             .tc = tc,
             .sig = sig,
@@ -579,7 +614,7 @@ const CallArgsBinder = struct {
         };
     }
 
-    fn fromFun(tc: *TypeChecker, fun_t: ty.TypeRefStrict(ty.Fun)) CallArgsBinder {
+    fn fromFun(tc: *TypeChecker, fun_t: ty.TypeRefStrict(ty.Fun)) CallArgBinder {
         const fun = fun_t.get(tc.type_store.*);
         const sig = fun.signature.get(tc.type_store.*);
         return .{
@@ -595,7 +630,7 @@ const CallArgsBinder = struct {
         };
     }
 
-    fn bind(c: *CallArgsBinder, call_at: Code.Offset, args: []node.CallExprArg) void {
+    fn bind(c: *CallArgBinder, call_at: Code.Offset, args: []node.CallExprArg) void {
         var has_error = false;
         const cb = &c.bind_ops;
         const tc = c.tc;
@@ -632,7 +667,7 @@ const CallArgsBinder = struct {
                         const al = tc.ctx().scratch.allocator();
                         const st_sig = synthSigFromStruct(al, param.type, st);
                         const st_param_bindings = synthParamBindingsFromStruct(al, st);
-                        var sub_binder = CallArgsBinder.init(tc, "field", param.type, st_sig, st_param_bindings);
+                        var sub_binder = CallArgBinder.init(tc, "field", param.type, st_sig, st_param_bindings);
 
                         const bound = std.math.clamp(arg_i + st.fields.len, 0, args.len);
                         const sub_args = args[arg_i..bound];
@@ -688,7 +723,7 @@ const CallArgsBinder = struct {
                         const al = tc.ctx().scratch.allocator();
                         const st_sig = synthSigFromTuple(al, param.type, tup);
                         const st_param_bindings = synthParamBindingsFromTuple(tc.ast, al, tup);
-                        var sub_binder = CallArgsBinder.init(tc, "field", param.type, st_sig, st_param_bindings);
+                        var sub_binder = CallArgBinder.init(tc, "field", param.type, st_sig, st_param_bindings);
 
                         const bound = std.math.clamp(arg_i + tup.types.len, 0, args.len);
                         const sub_args = args[arg_i..bound];
@@ -841,7 +876,7 @@ fn bindCall(tc: *TypeChecker, call_t: TypeRef, call: anytype) TypeRef {
     const callable = tc.type_store.get(call_t);
     return switch (callable) {
         .fun => res: {
-            var binder = CallArgsBinder.fromFun(tc, .{ .ref = call_t });
+            var binder = CallArgBinder.fromFun(tc, .{ .ref = call_t });
             binder.bind(call.head.position, call.args);
             _ = tc.ctx().scratch.reset(.retain_capacity);
             call.call_bindings = binder.bind_ops.call_bindings;
@@ -870,7 +905,7 @@ fn bindCall(tc: *TypeChecker, call_t: TypeRef, call: anytype) TypeRef {
 
                         const st_sig = synthSigFromStruct(al, cast_to, st);
                         const st_param_bindings = synthParamBindingsFromStruct(al, st);
-                        var binder = CallArgsBinder.init(tc, "field", cast_to, st_sig, st_param_bindings);
+                        var binder = CallArgBinder.init(tc, "field", cast_to, st_sig, st_param_bindings);
 
                         binder.bind(call.head.position, call.args);
                         call.call_bindings = binder.bind_ops.call_bindings;
@@ -881,7 +916,7 @@ fn bindCall(tc: *TypeChecker, call_t: TypeRef, call: anytype) TypeRef {
 
                         const tup_sig = synthSigFromTuple(al, cast_to, tup);
                         const tup_param_bindings = synthParamBindingsFromTuple(tc.ast, al, tup);
-                        var binder = CallArgsBinder.init(tc, "field", cast_to, tup_sig, tup_param_bindings);
+                        var binder = CallArgBinder.init(tc, "field", cast_to, tup_sig, tup_param_bindings);
 
                         binder.bind(call.head.position, call.args);
                         call.call_bindings = binder.bind_ops.call_bindings;

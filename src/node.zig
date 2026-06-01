@@ -181,6 +181,7 @@ pub const StructField = struct {
     head: Head = .{},
     name: Ident = .{},
     type: Type = .dirty,
+    type_ref: TypeRef = .unset,
     default: ?Expr = null,
 };
 
