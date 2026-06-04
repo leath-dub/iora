@@ -18,7 +18,7 @@ pub const Register = enum(usize) {
 };
 
 pub const Operation = enum {
-    def, // define a constant
+    let,
     add,
     sub,
     mul,
@@ -33,7 +33,7 @@ pub const Operation = enum {
 };
 
 pub const operand_count = std.EnumMap(Operation, u8).init(.{
-    .def = 1,
+    .let = 1,
     .add = 2,
     .sub = 2,
     .mul = 2,
@@ -81,25 +81,37 @@ pub fn instruction2(op: Operation, arg0: Operand, arg1: Operand) Instruction {
 pub const FunUnit = struct {
     start: *Block = undefined,
     current: *Block = undefined,
-    register: Register = .nil,
+    last_register: Register = .nil,
+    last_var: Var = .nil,
 
     pub fn allocRegister(fu: *FunUnit, _inst: Instruction) Instruction {
-        fu.register += 1;
+        fu.last_register += 1;
         var inst = _inst;
-        inst.id = fu.register;
+        inst.id = fu.last_register;
         return inst;
     }
+
+    pub fn allocVar(fu: *FunUnit) Var {
+        fu.last_var += 1;
+        return fu.last_var;
+    }
+};
+
+// Unique identifier for a given variable inside a FunUnit
+pub const Var = enum(usize) {
+    nil,
+    _,
 };
 
 pub const Block = struct {
     instructions: std.ArrayList(Instruction) = .empty,
-    value_from_ident: std.StringHashMapUnmanaged(Register) = .empty,
+    values: std.AutoHashMapUnmanaged(Var, Register) = .empty,
     predecessors: std.ArrayList(*Block) = .empty,
     successors: std.ArrayList(*Block) = .empty,
 
     pub fn deinit(blk: *Block, al: std.mem.Allocator) void {
         blk.instructions.deinit(al);
-        blk.value_from_ident.deinit(al);
+        blk.values.deinit(al);
         blk.predecessors.deinit(al);
         blk.successors.deinit(al);
     }
@@ -108,10 +120,10 @@ pub const Block = struct {
         blk.instructions.append(al, inst) catch @panic("OOM");
     }
 
-    pub fn assign(blk: *Block, al: std.mem.Allocator, ident: []const u8, inst: Instruction) void {
+    pub fn assign(blk: *Block, al: std.mem.Allocator, v: Var, inst: Instruction) void {
         std.debug.assert(inst.id != .nil);
         blk.add(al, inst);
-        blk.value_from_ident.put(al, ident, inst.id);
+        blk.values.put(al, v, inst.id);
     }
 
     pub fn addPredecessor(blk: *Block, al: std.mem.Allocator, pred: *Block) void {
@@ -120,5 +132,10 @@ pub const Block = struct {
 
     pub fn addSuccessor(blk: *Block, al: std.mem.Allocator, succ: *Block) void {
         blk.successors.append(al, succ) catch @panic("OOM");
+    }
+
+    pub fn link(pred: *Block, al: std.mem.Allocator, succ: *Block) void {
+        pred.addSuccessor(al, succ);
+        succ.addPredecessor(al, pred);
     }
 };

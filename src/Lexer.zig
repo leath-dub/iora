@@ -983,7 +983,7 @@ const LexerTest = struct {
         try std.testing.expectEqual(.str_lit, tok.type);
         try std.testing.expect(tok.lit != null);
         try std.testing.expectEqual(.string, @as(std.meta.Tag(Lit), tok.lit.?));
-        try std.testing.expectEqualSlices(u8, tok.lit.?.string.inner_text, tok.span[1..tok.span.len - 1]);
+        try std.testing.expectEqualSlices(u8, tok.lit.?.string.inner_text, tok.span[1 .. tok.span.len - 1]);
         try std.testing.expectEqualSlices(u8, tok.span, text);
     }
 

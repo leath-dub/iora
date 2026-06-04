@@ -39,6 +39,7 @@ pub const VarDecl = struct {
     type: ?Type = null,
     type_ref: TypeRef = .unset,
     init_expr: ?Expr = null,
+    id: ir.Var  = .nil,
 };
 
 pub const DefDecl = struct {
@@ -48,6 +49,7 @@ pub const DefDecl = struct {
     type: ?Type = null,
     type_ref: TypeRef = .unset,
     init_expr: Expr = .dirty,
+    id: ir.Var  = .nil,
 };
 
 const Linkage = enum {
@@ -75,6 +77,7 @@ pub const FunParam = struct {
     type: Type = .dirty,
     unpack: bool = false,
     type_ref: TypeRef = .unset,
+    id: ir.Var  = .nil,
 };
 
 pub const TypeDecl = struct {

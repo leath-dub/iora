@@ -5,6 +5,7 @@ const ty = @import("type.zig");
 const TypeRef = @import("type_ref.zig").TypeRef;
 const util = @import("util.zig");
 const common = @import("common.zig");
+const Ast = @import("Ast.zig");
 
 const ir = @import("ir.zig");
 
@@ -28,9 +29,35 @@ pub fn enterFunParam(ib: *IrBuilder, fun_param: *node.FunParam) void {
     const unit = ib.currentUnit();
     unit.current.assign(
         ib.ctx.allocator,
-        fun_param.name.text(),
-        unit.allocRegister(ir.instruction1(.def, .{ .value = .{ .u64 = 0 } })),
+        allocParam(unit, fun_param),
+        unit.allocRegister(ir.instruction1(.let, .{ .value = .{ .u64 = 0 } })),
     );
+}
+
+pub fn enterIfStmt(ib: *IrBuilder, if_stmt: *node.IfStmt) Ast.ChildDisposition {
+    const unit = ib.currentUnit();
+    
+    const then_block = ib.allocBlock();
+    const else_block = ib.allocBlock();
+    const join_block = ib.allocBlock();
+
+    then_block.addPredecessor(ib.ctx.allocator, unit.current);
+    else_block.addPredecessor(ib.ctx.allocator, unit.current);
+
+    unit.current = then_block;
+    Ast.walk(ib, &if_stmt.then_arm);
+    then_block.addSuccessor(ib.ctx.allocator, join_block);
+
+    unit.current = else_block;
+    Ast.walk(ib, &if_stmt.else_arm);
+    else_block.addSuccessor(ib.ctx.allocator, join_block);
+
+    join_block.addPredecessor(ib.ctx.allocator, then_block);
+    join_block.addPredecessor(ib.ctx.allocator, else_block);
+
+    unit.current = join_block;
+
+    return .skip;
 }
 
 pub fn exitFunDecl(ib: *IrBuilder, fun_decl: *node.FunDecl) void {
@@ -50,8 +77,27 @@ pub fn deinit(ib: *IrBuilder) void {
     ib.fun_units.deinit();
 }
 
+fn allocVar(unit: *ir.FunUnit, var_decl: *node.VarDecl) ir.Var {
+    var_decl.id = unit.allocVar();
+    return var_decl.id;
+}
+
+fn allocDef(unit: *ir.FunUnit, def_decl: *node.DefDecl) ir.Var {
+    def_decl.id = unit.allocVar();
+    return def_decl.id;
+}
+
+fn allocParam(unit: *ir.FunUnit, fun_param: *node.FunParam) ir.Var {
+    fun_param.id = unit.allocVar();
+    return fun_param.id;
+}
+
+fn allocBlock(ib: *IrBuilder) *ir.Block {
+    return ib.block_arena.allocator().create(ir.Block) catch @panic("OOM");
+}
+
 fn beginUnit(ib: *IrBuilder, unit: *ir.FunUnit) void {
-    unit.start = ib.block_arena.allocator().create(ir.Block) catch @panic("OOM");
+    unit.start = ib.allocBlock();
     unit.current = unit.start;
     ib.fun_units.push(unit);
 }
