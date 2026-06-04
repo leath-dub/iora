@@ -95,7 +95,6 @@ pub fn exitTypeDecl(tc: *TypeChecker, type_decl: *node.TypeDecl) void {
     type_decl.type_ref = tc.type_store.intern(&type_decl.type);
 }
 
-
 pub fn exitStructField(tc: *TypeChecker, struct_field: *node.StructField) void {
     struct_field.type_ref = tc.type_store.intern(&struct_field.type);
 }

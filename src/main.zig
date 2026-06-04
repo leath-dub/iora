@@ -16,6 +16,7 @@ const ty = @import("type.zig");
 const ModuleScopeResolver = @import("ModuleScopeResolver.zig");
 const LexicalScopeResolver = @import("LexicalScopeResolver.zig");
 const TypeChecker = @import("TypeChecker.zig");
+// const CBackend = @import("CBackend.zig");
 
 const Cli = struct {
     input_path: []const u8,
@@ -101,6 +102,15 @@ pub fn main(init: std.process.Init) !void {
 
     var tc = TypeChecker.init(&ast, &code, &type_store);
     try invokeListener(&ast, &code, &tc);
+
+    // var cb = CBackend.init(&ctx, &type_store);
+    // defer cb.deinit();
+    // Ast.walk(&cb, &ast.root.?);
+
+    // var buf: [4096]u8 = undefined;
+    // var stdout = std.Io.File.stdout().writer(ctx.io, &buf);
+    // defer stdout.flush() catch unreachable;
+    // try cb.emit(&stdout.interface);
 
     std.debug.print("{f}", .{ast});
 }

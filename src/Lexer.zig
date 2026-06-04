@@ -209,6 +209,7 @@ pub const Lit = union(enum) {
     int: IntLit,
     float: FloatLit,
     char: CharLit,
+    string: StringLit,
 };
 
 pub const Token = struct {
@@ -518,9 +519,12 @@ fn lexString(l: *Lexer) LexError!Token {
         l.raise(l.cursor, "unmatched \" (double-quote)", .{});
         // Delimit the quote by the end of line and move on
         const line, const column = l.code.lineAndColumn(l.cursor);
-        return l.token(.str_lit, l.code.lineText(line).len - column);
+        const total_len = l.code.lineText(line).len - column;
+        const inner_text = l.code.text[l.cursor..][1 .. total_len - 1];
+        return l.tokenLit(.str_lit, total_len, .{ .string = .{ .inner_text = inner_text } });
     }
-    return l.token(.str_lit, offset + 1);
+    const inner_text = l.code.text[l.cursor..][1..offset];
+    return l.tokenLit(.str_lit, offset + 1, .{ .string = .{ .inner_text = inner_text } });
 }
 
 const Digits = struct {
@@ -977,7 +981,9 @@ const LexerTest = struct {
         var lexer = Lexer.init(&t.gc, &t.syntax, &code);
         const tok = lexer.peek();
         try std.testing.expectEqual(.str_lit, tok.type);
-        try std.testing.expect(tok.lit == null);
+        try std.testing.expect(tok.lit != null);
+        try std.testing.expectEqual(.string, @as(std.meta.Tag(Lit), tok.lit.?));
+        try std.testing.expectEqualSlices(u8, tok.lit.?.string.inner_text, tok.span[1..tok.span.len - 1]);
         try std.testing.expectEqualSlices(u8, tok.span, text);
     }
 

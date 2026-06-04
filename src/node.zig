@@ -4,6 +4,7 @@ const Token = @import("Lexer.zig").Token;
 const Code = @import("Code.zig");
 const common = @import("common.zig");
 const TypeRef = @import("type_ref.zig").TypeRef;
+const ir = @import("ir.zig");
 
 // TODO:
 // pub const Module = struct {
@@ -65,6 +66,7 @@ pub const FunDecl = struct {
     scope: Scope = .{},
     label_scope: LabelScope = .{},
     type_ref: TypeRef = .unset,
+    unit: ir.FunUnit = .{},
 };
 
 pub const FunParam = struct {
