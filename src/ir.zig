@@ -95,6 +95,8 @@ pub const FunUnit = struct {
         fu.last_var += 1;
         return fu.last_var;
     }
+
+    pub const dont_walk = true;
 };
 
 // Unique identifier for a given variable inside a FunUnit

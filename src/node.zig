@@ -39,7 +39,7 @@ pub const VarDecl = struct {
     type: ?Type = null,
     type_ref: TypeRef = .unset,
     init_expr: ?Expr = null,
-    id: ir.Var  = .nil,
+    id: ir.Var = .nil,
 };
 
 pub const DefDecl = struct {
@@ -49,7 +49,7 @@ pub const DefDecl = struct {
     type: ?Type = null,
     type_ref: TypeRef = .unset,
     init_expr: Expr = .dirty,
-    id: ir.Var  = .nil,
+    id: ir.Var = .nil,
 };
 
 const Linkage = enum {
@@ -77,7 +77,7 @@ pub const FunParam = struct {
     type: Type = .dirty,
     unpack: bool = false,
     type_ref: TypeRef = .unset,
-    id: ir.Var  = .nil,
+    id: ir.Var = .nil,
 };
 
 pub const TypeDecl = struct {
@@ -467,7 +467,7 @@ pub const CallBindings = struct {
     }
 
     pub const ArgBinding = struct {
-        name: []const u8,
+        name: []const u8 = "",
         expr: ?*Expr = null,
     };
 
@@ -541,6 +541,7 @@ pub const Flag = enum {
     dirty,
     last_child,
     resolving,
+    fake,
 };
 
 pub const Symbol = struct {

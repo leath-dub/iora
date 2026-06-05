@@ -567,13 +567,26 @@ pub const Fun = struct {
     bindings: []node.Ident, // param index -> name
 
     pub const Signature = struct {
-        params: []Param,
-        return_type: TypeRef,
+        params: []const Param = &.{},
+        return_type: TypeRef = .unset,
+
+        // Needs to be inline otherwise I get valgrind errors :O
+        pub inline fn initCast(cast_to: TypeRef) Signature {
+            return .{
+                .params = &.{
+                    .{
+                        .type = cast_to,
+                        .unpack = false,
+                    },
+                },
+                .return_type = cast_to,
+            };
+        }
     };
 
     pub const Param = struct {
-        type: TypeRef,
-        unpack: bool,
+        type: TypeRef = .unset,
+        unpack: bool = false,
     };
 };
 

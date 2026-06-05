@@ -36,7 +36,7 @@ pub fn enterFunParam(ib: *IrBuilder, fun_param: *node.FunParam) void {
 
 pub fn enterIfStmt(ib: *IrBuilder, if_stmt: *node.IfStmt) Ast.ChildDisposition {
     const unit = ib.currentUnit();
-    
+
     const then_block = ib.allocBlock();
     const else_block = ib.allocBlock();
     const join_block = ib.allocBlock();

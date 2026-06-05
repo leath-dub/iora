@@ -16,6 +16,7 @@ const ty = @import("type.zig");
 const ModuleScopeResolver = @import("ModuleScopeResolver.zig");
 const LexicalScopeResolver = @import("LexicalScopeResolver.zig");
 const TypeChecker = @import("TypeChecker.zig");
+const IrBuilder = @import("IrBuilder.zig");
 // const CBackend = @import("CBackend.zig");
 
 const Cli = struct {
@@ -102,6 +103,12 @@ pub fn main(init: std.process.Init) !void {
 
     var tc = TypeChecker.init(&ast, &code, &type_store);
     try invokeListener(&ast, &code, &tc);
+
+    // var block = ctx.createLifetime();
+    // defer block.deinit();
+    // var ib = IrBuilder.init(&ctx, &type_store, &block);
+    // defer ib.deinit();
+    // Ast.walk(&ib, &ast.root.?);
 
     // var cb = CBackend.init(&ctx, &type_store);
     // defer cb.deinit();

@@ -247,6 +247,7 @@ fn parseIfStmt(p: *Parser) node.IfStmt {
     if_stmt.cond = p.parseCond();
     if_stmt.then_arm = p.parseCompStmt();
     if (p.on(.@"else")) {
+        _ = p.next();
         if_stmt.else_arm = p.parseElse();
     }
     return ok(if_stmt);

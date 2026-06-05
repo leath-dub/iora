@@ -457,11 +457,11 @@ fn propagateSymbolType(tc: *TypeChecker, type_ref: *TypeRef, name: *const node.I
 const CallBindingsOps = struct {
     call_bindings: node.CallBindings,
 
-    pub fn init(al: std.mem.Allocator, sig: ty.Fun.Signature, param_bindings: []node.Ident) CallBindingsOps {
+    pub fn init(al: std.mem.Allocator, sig: ty.Fun.Signature, param_bindings: []const node.Ident) CallBindingsOps {
+        std.debug.assert(sig.params.len != 0);
         var bindings_ = al.alloc(node.CallBindings.ArgBinding, sig.params.len) catch @panic("OOM");
-        bindings_.len = sig.params.len;
-        for (bindings_, 0..) |*binding, i| {
-            binding.* = .{ .name = param_bindings[i].text() };
+        for (0..sig.params.len) |i| {
+            bindings_[i] = .{ .name = param_bindings[i].text() };
         }
         return .{
             .call_bindings = .{
@@ -594,11 +594,11 @@ const CallArgBinder = struct {
     tc: *TypeChecker,
     sig: ty.Fun.Signature,
     callable_t: TypeRef,
-    param_bindings: []node.Ident,
+    param_bindings: []const node.Ident,
     bind_ops: CallBindingsOps,
     item_desc: []const u8 = "parameter",
 
-    fn init(tc: *TypeChecker, item_name: []const u8, callable_t: TypeRef, sig: ty.Fun.Signature, param_bindings: []node.Ident) CallArgBinder {
+    fn init(tc: *TypeChecker, item_name: []const u8, callable_t: TypeRef, sig: ty.Fun.Signature, param_bindings: []const node.Ident) CallArgBinder {
         return .{
             .tc = tc,
             .sig = sig,
@@ -629,7 +629,7 @@ const CallArgBinder = struct {
         };
     }
 
-    fn bind(c: *CallArgBinder, call_at: Code.Offset, args: []node.CallExprArg) void {
+    fn bind(c: *CallArgBinder, call_at: Code.Offset, args: []node.CallExprArg) node.CallBindings {
         var has_error = false;
         const cb = &c.bind_ops;
         const tc = c.tc;
@@ -664,12 +664,37 @@ const CallArgBinder = struct {
                         // Synthesize a function signature for the
                         // struct initialization
                         const al = tc.ctx().scratch.allocator();
+                        defer _ = tc.ctx().scratch.reset(.retain_capacity);
+
                         const st_sig = synthSigFromStruct(al, param.type, st);
                         const st_param_bindings = synthParamBindingsFromStruct(al, st);
                         var sub_binder = CallArgBinder.init(tc, "field", param.type, st_sig, st_param_bindings);
 
                         const bound = std.math.clamp(arg_i + st.fields.len, 0, args.len);
                         const sub_args = args[arg_i..bound];
+
+                        // We also need to synthesize a call expression
+                        // to bind to the parameter - the call expression
+                        // will store the binding result of the sub check
+                        const fake_token = node.TokenExpr{
+                            .token = .{
+                                .type = .synthesized,
+                                .span = "<synthesized>",
+                            },
+                            .type_ref = param.type,
+                        };
+
+                        const fake_call = node.CallExpr{
+                            .head = .{
+                                .flags = .init(.{.fake = true}),
+                                .position = sub_args[0].at(),
+                            },
+                            .args = sub_args,
+                            .callable = tc.ast.box(node.Expr{ .token_expr = fake_token }),
+                            .type_ref = param.type,
+                        };
+
+                        var fake_expr = tc.ast.box(node.Expr{ .call = fake_call });
 
                         // TODO(default values): if we get an invalid type argument in
                         // the sub check, it should only be invalid
@@ -687,29 +712,7 @@ const CallArgBinder = struct {
                         //
                         // This should be valid by just assuming that
                         // 'x' takes on it's default value
-                        sub_binder.bind(arg.at(), sub_args);
-
-                        // We also need to synthesize a call expression
-                        // to bind to the parameter - the call expression
-                        // will store the binding result of the sub check
-                        const fake_token = node.TokenExpr{
-                            .token = .{
-                                .type = .synthesized,
-                                .span = "<synthesized>",
-                            },
-                            .type_ref = tc.type_store.internDataStable(.{
-                                .type_of = param.type,
-                            }),
-                        };
-
-                        const fake_call = node.CallExpr{
-                            .args = sub_args,
-                            .callable = tc.ast.box(node.Expr{ .token_expr = fake_token }),
-                            .type_ref = param.type,
-                        };
-
-                        var fake_expr = tc.ast.box(node.Expr{ .call = fake_call });
-                        fake_expr.call.call_bindings = sub_binder.bind_ops.call_bindings;
+                        fake_expr.call.call_bindings = sub_binder.bind(arg.at(), sub_args);
 
                         std.debug.assert(cb.bindAt(i, fake_expr) == .success);
 
@@ -720,13 +723,14 @@ const CallArgBinder = struct {
                         // Synthesize a function signature for the
                         // struct initialization
                         const al = tc.ctx().scratch.allocator();
+                        defer _ = tc.ctx().scratch.reset(.retain_capacity);
+
                         const st_sig = synthSigFromTuple(al, param.type, tup);
                         const st_param_bindings = synthParamBindingsFromTuple(tc.ast, al, tup);
                         var sub_binder = CallArgBinder.init(tc, "field", param.type, st_sig, st_param_bindings);
 
                         const bound = std.math.clamp(arg_i + tup.types.len, 0, args.len);
                         const sub_args = args[arg_i..bound];
-                        sub_binder.bind(arg.at(), sub_args);
 
                         // We also need to synthesize a call expression
                         // to bind to the parameter - the call expression
@@ -748,7 +752,7 @@ const CallArgBinder = struct {
                         };
 
                         var fake_expr = tc.ast.box(node.Expr{ .call = fake_call });
-                        fake_expr.call.call_bindings = sub_binder.bind_ops.call_bindings;
+                        fake_expr.call.call_bindings = sub_binder.bind(arg.at(), sub_args);
 
                         std.debug.assert(cb.bindAt(i, fake_expr) == .success);
 
@@ -868,6 +872,8 @@ const CallArgBinder = struct {
                 }
             }
         }
+
+        return c.bind_ops.call_bindings;
     }
 };
 
@@ -876,9 +882,8 @@ fn bindCall(tc: *TypeChecker, call_t: TypeRef, call: anytype) TypeRef {
     return switch (callable) {
         .fun => res: {
             var binder = CallArgBinder.fromFun(tc, .{ .ref = call_t });
-            binder.bind(call.head.position, call.args);
-            _ = tc.ctx().scratch.reset(.retain_capacity);
-            call.call_bindings = binder.bind_ops.call_bindings;
+            defer _ = tc.ctx().scratch.reset(.retain_capacity);
+            call.call_bindings = binder.bind(call.head.position, call.args);
             break :res binder.sig.return_type;
         },
         .type_of => |cast_to| res: {
@@ -906,8 +911,7 @@ fn bindCall(tc: *TypeChecker, call_t: TypeRef, call: anytype) TypeRef {
                         const st_param_bindings = synthParamBindingsFromStruct(al, st);
                         var binder = CallArgBinder.init(tc, "field", cast_to, st_sig, st_param_bindings);
 
-                        binder.bind(call.head.position, call.args);
-                        call.call_bindings = binder.bind_ops.call_bindings;
+                        call.call_bindings = binder.bind(call.head.position, call.args);
                     },
                     .tuple => |tup| {
                         const al = tc.ctx().scratch.allocator();
@@ -917,8 +921,7 @@ fn bindCall(tc: *TypeChecker, call_t: TypeRef, call: anytype) TypeRef {
                         const tup_param_bindings = synthParamBindingsFromTuple(tc.ast, al, tup);
                         var binder = CallArgBinder.init(tc, "field", cast_to, tup_sig, tup_param_bindings);
 
-                        binder.bind(call.head.position, call.args);
-                        call.call_bindings = binder.bind_ops.call_bindings;
+                        call.call_bindings = binder.bind(call.head.position, call.args);
                     },
                     else => {},
                 }
@@ -941,17 +944,17 @@ fn bindCall(tc: *TypeChecker, call_t: TypeRef, call: anytype) TypeRef {
                 };
             }
 
-            tc.tryCastTo(child_type.?, cast_to);
-            if (child_type.?.* != cast_to) {
-                tc.raise(
-                    call.head.position,
-                    "cannot cast type {f} to type {f}",
-                    .{
-                        ty.formatView(tc.type_store, child_type.?.*),
-                        ty.formatView(tc.type_store, cast_to),
+            const builtin_param_bindings: []const node.Ident = &.{
+                .{
+                    .token = .{
+                        .type = .ident,
+                        .span = tc.ast.num(0),
                     },
-                );
-            }
+                },
+            };
+            const builtin_sig: ty.Fun.Signature = .initCast(cast_to);
+            var binder = CallArgBinder.init(tc, "cast operand", cast_to, builtin_sig, builtin_param_bindings);
+            call.call_bindings = binder.bind(call.head.position, call.args);
 
             break :res cast_to;
         },
@@ -987,10 +990,11 @@ pub fn enterCallExpr(tc: *TypeChecker, call: *node.CallExpr) Ast.ChildDispositio
 const CallableInfo = struct {
     item_desc: []const u8,
     signature: ty.Fun.Signature,
-    param_bindings: []node.Ident,
+    param_bindings: []const node.Ident,
 };
 
-fn getCallableInfo(tc: *TypeChecker, callable_t: TypeRef) CallableInfo {
+// Needs to be inline otherwise I get valgrind errors :O
+inline fn getCallableInfo(tc: *TypeChecker, callable_t: TypeRef) CallableInfo {
     const callable = tc.type_store.get(callable_t);
     again: switch (callable) {
         .fun => |fun| {
@@ -1030,6 +1034,22 @@ fn getCallableInfo(tc: *TypeChecker, callable_t: TypeRef) CallableInfo {
         .user => |user| {
             continue :again tc.type_store.get(user.type_ref);
         },
+        .primitive => {
+            const callable_td = tc.type_store.get(callable_t);
+            const cast_to = callable_td.type_of;
+            return .{
+                .item_desc = "cast operand",
+                .signature = ty.Fun.Signature.initCast(cast_to),
+                .param_bindings = &.{
+                    .{
+                        .token = .{
+                            .type = .ident,
+                            .span = tc.ast.num(0),
+                        },
+                    },
+                },
+            };
+        },
         else => |x| common.todoNoReturn("{any}", .{x}),
     }
     unreachable;
@@ -1050,21 +1070,40 @@ pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
         }
 
         const ex = b.expr.?;
-        const ex_t = ex.getType().*;
+
+        if (ex.head().flags.contains(.fake)) {
+            // Run exit hook on unpack param
+            tc.exitCallExpr(&ex.call);
+        }
 
         const callable_t = call.callable.getType().*;
+        const callable_td = tc.type_store.get(callable_t);
         const callable_info = tc.getCallableInfo(callable_t);
         defer _ = tc.ctx().scratch.reset(.retain_capacity);
 
         for (callable_info.param_bindings, 0..) |pb, i| {
             if (std.mem.eql(u8, b.name, pb.text())) {
                 const param = callable_info.signature.params[i];
-                if (ex_t != param.type) {
+                if (callable_td == .type_of and callable_td.type_of.isBuiltin()) {
+                    tc.tryCastTo(ex.getType(), param.type);
+                    if (ex.getType().* != param.type) {
+                        tc.raise(
+                            call.head.position,
+                            "cannot cast type {f} to type {f}",
+                            .{
+                                ty.formatView(tc.type_store, ex.getType().*),
+                                ty.formatView(tc.type_store, param.type),
+                            },
+                        );
+                    }
+                    break;
+                }
+                if (ex.getType().* != param.type) {
                     tc.raise(
                         ex.at(),
                         "invalid argument type {f}; {s} {s} of '{f}' expects type {f}",
                         .{
-                            ty.formatView(tc.type_store, ex_t),
+                            ty.formatView(tc.type_store, ex.getType().*),
                             callable_info.item_desc,
                             pb.text(),
                             ty.formatView(tc.type_store, callable_t),
