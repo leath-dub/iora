@@ -364,6 +364,7 @@ pub const Expr = union(enum) {
     // Atomic expressions
     anon_call: AnonCallExpr,
     token_expr: TokenExpr,
+    type_expr: TypeExpr,
     dirty,
 
     pub fn head(expr: *Expr) *Head {
@@ -419,6 +420,12 @@ pub const SelectorExpr = struct {
 pub const TokenExpr = struct {
     head: Head = .{},
     token: Token = .{},
+    type_ref: TypeRef = .unset,
+};
+
+pub const TypeExpr = struct {
+    head: Head = .{},
+    type: *Type = undefined,
     type_ref: TypeRef = .unset,
 };
 

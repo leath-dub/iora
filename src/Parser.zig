@@ -346,6 +346,12 @@ fn parseTypeDecl(p: *Parser, delim: bool) node.TypeDecl {
     return ok(type_decl);
 }
 
+fn parseTypeExpr(p: *Parser) node.TypeExpr {
+    var type_expr = p.create(node.TypeExpr);
+    type_expr.type = p.ast.box(p.parseType());
+    return ok(type_expr);
+}
+
 fn parseType(p: *Parser) node.Type {
     return again: switch (p.at().type) {
         .s8,
@@ -805,8 +811,14 @@ fn parseAtomExpr(p: *Parser) node.Expr {
         .true,
         .false,
         => .{ .token_expr = p.createTokenExpr() },
+        .colon => out: {
+            _ = p.next();
+            break :out .{ .type_expr = p.parseTypeExpr() };
+        },
         else => if (p.expectOneOf(.{
             .lparen,
+            .dot,
+            .colon,
             .ident,
             .char_lit,
             .str_lit,

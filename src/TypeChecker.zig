@@ -184,6 +184,12 @@ fn tryCastTo(_: *TypeChecker, from_type: *TypeRef, to_type: TypeRef) void {
     }
 }
 
+pub fn exitTypeExpr(tc: *TypeChecker, type_expr: *node.TypeExpr) void {
+    type_expr.type_ref = tc.type_store.internDataStable(.{
+        .type_of = tc.type_store.intern(type_expr.type),
+    });
+}
+
 pub fn exitTokenExpr(tc: *TypeChecker, token_expr: *node.TokenExpr) void {
     const token = token_expr.token;
     token_expr.type_ref = switch (token.type) {
@@ -681,12 +687,14 @@ const CallArgBinder = struct {
                                 .type = .synthesized,
                                 .span = "<synthesized>",
                             },
-                            .type_ref = param.type,
+                            .type_ref = tc.type_store.internDataStable(.{
+                                .type_of = param.type,
+                            }),
                         };
 
                         const fake_call = node.CallExpr{
                             .head = .{
-                                .flags = .init(.{.fake = true}),
+                                .flags = .init(.{ .fake = true }),
                                 .position = sub_args[0].at(),
                             },
                             .args = sub_args,
