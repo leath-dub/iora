@@ -437,7 +437,7 @@ fn parseFunType(p: *Parser) node.FunType {
     if (!p.skipIf(.lparen)) return err(fun);
     fun.params = p.zeroOrMoreDelim(node.FunParam, parseFunParam, .comma, .rparen);
     if (!p.skipIf(.rparen)) return err(fun);
-    again: switch (p.at().type) {
+    switch (p.at().type) {
         .@"extern" => {
             _ = p.next();
             fun.linkage = .external;
@@ -446,9 +446,8 @@ fn parseFunType(p: *Parser) node.FunType {
             _ = p.next();
             fun.linkage = .internal;
         },
-        else => if (p.expectOneOf(.{ .@"extern", .intern }, "keyword 'extern' or 'intern'")) {
-            continue :again p.at().type;
-        } else return err(fun),
+        .arrow => {},
+        else => return ok(fun),
     }
     if (p.on(.arrow)) {
         _ = p.next();

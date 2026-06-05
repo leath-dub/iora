@@ -92,6 +92,14 @@ pub fn enterFunDecl(lr: *LexicalScopeResolver, fun_decl: *node.FunDecl) void {
     }
 }
 
+pub fn enterFunType(lr: *LexicalScopeResolver, fun_type: *node.FunType) void {
+    lr.push(&fun_type.scope);
+}
+
+pub fn exitFunType(lr: *LexicalScopeResolver, fun_type: *node.FunType) void {
+    lr.pop(&fun_type.scope);
+}
+
 const LabelInserter = struct {
     lr: *LexicalScopeResolver,
 
