@@ -685,7 +685,7 @@ const CallArgBinder = struct {
                         const fake_token = node.TokenExpr{
                             .token = .{
                                 .type = .synthesized,
-                                .span = "<synthesized>",
+                                .span = "<fake>",
                             },
                             .type_ref = tc.type_store.internDataStable(.{
                                 .type_of = param.type,

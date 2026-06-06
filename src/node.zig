@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const Io = std.Io;
+
 const Token = @import("Lexer.zig").Token;
 const Code = @import("Code.zig");
 const common = @import("common.zig");
@@ -398,6 +400,50 @@ pub const Expr = union(enum) {
     pub fn at(expr: Expr) Code.Offset {
         return expr.headConst().position;
     }
+
+    pub fn format(
+        expr: Expr,
+        writer: *Io.Writer,
+    ) Io.Writer.Error!void {
+        switch (expr) {
+            .postfix => |e| try writer.print("{f}{s}", .{ e.operand.*, e.op.span }),
+            .call => |e| {
+                try writer.print("{f}(", .{ e.callable.* });
+                for (e.args, 0..) |a, i| {
+                    if (i != 0) {
+                        try writer.writeAll(", ");
+                    }
+                    try a.format(writer);
+                }
+                try writer.writeByte(')');
+            },
+            .coll_access => |e| try writer.print("{f}[{f}]", .{e.lvalue.*, e.subscript.* }),
+            .ident_expr => |e| {
+                if (e.is_inferred) {
+                    try writer.writeByte('.');
+                }
+                try writer.writeAll(e.name.text());
+            },
+            .selector_expr => |e| {
+                try writer.print("{f}.{s}", .{ e.value.*, e.field.text() });
+            },
+            .unary => |e| try writer.print("{s}{f}", .{ e.op.span, e.operand.* }),
+            .bin => |e| try writer.print("{f}{s}{f}", .{ e.left.*, e.op.span, e.right.* }),
+            .anon_call => |e| {
+                try writer.writeByte('(');
+                for (e.args, 0..) |a, i| {
+                    if (i != 0) {
+                        try writer.writeAll(", ");
+                    }
+                    try a.format(writer);
+                }
+                try writer.writeByte(')');
+            },
+            .token_expr => |e| try writer.writeAll(e.token.span),
+            .type_expr => try writer.writeAll("<todo type>"),
+            .dirty => try writer.writeAll("<error>"),
+        }
+    }
 };
 
 pub const IdentExpr = struct {
@@ -465,7 +511,7 @@ pub const CallBindings = struct {
             }
             try w.print("{s}: ", .{binding.name});
             if (binding.expr) |ex| {
-                try w.print("{}", .{std.meta.activeTag(ex.*)});
+                try ex.format(w);
             } else {
                 try w.writeAll("<unbound>");
             }
@@ -511,6 +557,25 @@ pub const CallExprArg = union(enum) {
             .dirty => unreachable,
         };
     }
+
+    pub fn format(
+        arg: CallExprArg,
+        writer: *Io.Writer,
+    ) Io.Writer.Error!void {
+        switch (arg) {
+            .unpack => |ua| {
+                try writer.print("{f}..", .{ua.expr});
+            },
+            .labelled => |la| {
+                const un = if (la.unpack) ".." else "";
+                try writer.print("{s}{s}: {f}", .{ un, la.label.text(), la.expr});
+            },
+            .expr => |ea| {
+                try ea.format(writer);
+            },
+            .dirty => try writer.writeAll("<error>"),
+        }
+    }
 };
 
 pub const UnpackExpr = struct {
@@ -536,6 +601,25 @@ pub const CollSubscript = union(enum) {
     expr: Expr,
     range: SliceRange,
     dirty,
+
+    pub fn format(
+        sub: CollSubscript,
+        writer: *Io.Writer,
+    ) Io.Writer.Error!void {
+        switch (sub) {
+            .expr => |e| try e.format(writer),
+            .range => |r| {
+                if (r.begin) |b| {
+                    try b.format(writer);
+                }
+                try writer.writeByte(':');
+                if (r.end) |e| {
+                    try e.format(writer);
+                }
+            },
+            .dirty => try writer.writeAll("<error>"),
+        }
+    }
 };
 
 pub const SliceRange = struct {

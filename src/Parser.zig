@@ -338,7 +338,8 @@ fn parseTypeDecl(p: *Parser, delim: bool) node.TypeDecl {
     var type_decl = p.create(node.TypeDecl);
     if (!p.skipIf(.type)) return err(type_decl);
     type_decl.name = p.parseIdent();
-    if (!p.skipIf(.equal)) return err(type_decl);
+    // No need for '='
+    // if (!p.skipIf(.equal)) return err(type_decl);
     type_decl.type = p.parseType();
     if (delim) {
         if (!p.skipIf(.semicolon)) return err(type_decl);
