@@ -408,7 +408,7 @@ pub const Expr = union(enum) {
         switch (expr) {
             .postfix => |e| try writer.print("{f}{s}", .{ e.operand.*, e.op.span }),
             .call => |e| {
-                try writer.print("{f}(", .{ e.callable.* });
+                try writer.print("{f}(", .{e.callable.*});
                 for (e.args, 0..) |a, i| {
                     if (i != 0) {
                         try writer.writeAll(", ");
@@ -417,7 +417,7 @@ pub const Expr = union(enum) {
                 }
                 try writer.writeByte(')');
             },
-            .coll_access => |e| try writer.print("{f}[{f}]", .{e.lvalue.*, e.subscript.* }),
+            .coll_access => |e| try writer.print("{f}[{f}]", .{ e.lvalue.*, e.subscript.* }),
             .ident_expr => |e| {
                 if (e.is_inferred) {
                     try writer.writeByte('.');
@@ -568,7 +568,7 @@ pub const CallExprArg = union(enum) {
             },
             .labelled => |la| {
                 const un = if (la.unpack) ".." else "";
-                try writer.print("{s}{s}: {f}", .{ un, la.label.text(), la.expr});
+                try writer.print("{s}{s}: {f}", .{ un, la.label.text(), la.expr });
             },
             .expr => |ea| {
                 try ea.format(writer);

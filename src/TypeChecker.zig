@@ -684,7 +684,7 @@ const CallArgBinder = struct {
                         // will store the binding result of the sub check
                         const fake_token = node.TokenExpr{
                             .token = .{
-                                .type = .synthesized,
+                                .type = .fake,
                                 .span = "<fake>",
                             },
                             .type_ref = tc.type_store.internDataStable(.{
@@ -745,8 +745,8 @@ const CallArgBinder = struct {
                         // will store the binding result of the sub check
                         const fake_token = node.TokenExpr{
                             .token = .{
-                                .type = .synthesized,
-                                .span = "<synthesized>",
+                                .type = .fake,
+                                .span = "<fake>",
                             },
                             .type_ref = tc.type_store.internDataStable(.{
                                 .type_of = param.type,

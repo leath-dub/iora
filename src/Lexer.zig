@@ -31,7 +31,7 @@ const TokenDescriptor = struct {
 
 const token_descriptors = [_]TokenDescriptor{
     TokenDescriptor.init(.eof, "<EOF>"),
-    TokenDescriptor.init(.synthesized, "<synthesized token>"),
+    TokenDescriptor.init(.fake, "<fake token>"),
     TokenDescriptor.init(.illegal, "<illegal token>"),
     TokenDescriptor.init(.invalid, "<invalid token>"),
     TokenDescriptor.init(.empty, "<empty token>"),
