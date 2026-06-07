@@ -77,13 +77,13 @@ pub fn enterIfStmt(ib: *IrBuilder, if_stmt: *node.IfStmt) Ast.ChildDisposition {
 
     unit.current = then_block;
     Ast.walk(ib, &if_stmt.then_arm);
-    const then_exit_block = unit.current; 
+    const then_exit_block = unit.current;
     unit.blockPtr(then_exit_block).addSuccessor(ib.ctx.allocator, join_block);
     unit.blockPtr(join_block).addPredecessor(ib.ctx.allocator, then_exit_block);
 
     unit.current = else_block;
     Ast.walk(ib, &if_stmt.else_arm.?);
-    const else_exit_block = unit.current; 
+    const else_exit_block = unit.current;
     unit.blockPtr(else_exit_block).addSuccessor(ib.ctx.allocator, join_block);
     unit.blockPtr(join_block).addPredecessor(ib.ctx.allocator, else_exit_block);
 
@@ -222,6 +222,7 @@ fn readVarRec(ib: *IrBuilder, blk_ref: ir.BlockRef, id: ir.Var) ir.Register {
             ib.ctx.allocator,
             unit.allocRegister(ib.ins0(.phi)),
         );
+        unit.registerUsers(ib.ctx.allocator, blk_ref, blk.lastInstruction());
         blk.addIncompletePhi(ib.ctx.allocator, id, reg);
     } else if (blk.predecessors.items.len == 1) {
         // Single predeccessor, no phi node needed
@@ -232,6 +233,7 @@ fn readVarRec(ib: *IrBuilder, blk_ref: ir.BlockRef, id: ir.Var) ir.Register {
             ib.ctx.allocator,
             unit.allocRegister(ib.ins0(.phi)),
         );
+        unit.registerUsers(ib.ctx.allocator, blk_ref, blk.lastInstruction());
         const user = blk.assign(
             ib.ctx.allocator,
             id,
@@ -257,16 +259,22 @@ fn addPhiOperands(ib: *IrBuilder, blk_ref: ir.BlockRef, id: ir.Var, phi: ir.Regi
     const ins = blk.getByRef(phi_ins);
     std.debug.assert(ins.args.len == 0);
 
-    var args: std.ArrayList(ir.Operand) = .empty;
+    var args: std.AutoHashMapUnmanaged(ir.Register, void) = .empty;
     defer _ = ib.ctx.scratch.reset(.retain_capacity);
 
     for (blk.predecessors.items) |pred| {
         const reg = ib.readVar(pred, id);
-        args.append(ib.ctx.scratch.allocator(), .{ .register = reg }) catch @panic("OOM");
+        args.put(ib.ctx.scratch.allocator(), reg, {}) catch @panic("OOM");
         unit.addUser(ib.ctx.allocator, reg, pred, phi_ins);
     }
 
-    ins.args = ib.arena.allocator().dupe(ir.Operand, args.items) catch @panic("OOM");
+    var it = args.keyIterator();
+    var args_v: std.ArrayList(ir.Operand) = .empty;
+    while (it.next()) |r| {
+        args_v.append(ib.ctx.scratch.allocator(), .{ .register = r.* }) catch @panic("OOM");
+    }
+
+    ins.args = ib.arena.allocator().dupe(ir.Operand, args_v.items) catch @panic("OOM");
 
     // 'tryRemoveTrivialPhi' allocates in scratch allocator
     defer _ = ib.ctx.scratch.reset(.retain_capacity);
@@ -284,7 +292,7 @@ fn tryRemoveTrivialPhi(ib: *IrBuilder, blk_ref: ir.BlockRef, phi: ir.Register) i
         if (arg.register == same or arg.register == phi) {
             continue;
         }
-        if (same == .nil) {
+        if (same != .nil) {
             return phi;
         }
         same = arg.register;
@@ -294,13 +302,12 @@ fn tryRemoveTrivialPhi(ib: *IrBuilder, blk_ref: ir.BlockRef, phi: ir.Register) i
     //     // Read before assigned
     // }
 
-
     var users_opt: ?[]ir.User = null;
     if (unit.users.get(phi)) |users| {
         users_opt = ib.ctx.scratch.allocator().dupe(ir.User, users.items) catch @panic("OOM");
     }
 
-    unit.replaceUsers(phi, same);
+    unit.replaceUsers(ib.ctx.allocator, phi, same);
 
     if (users_opt) |users| {
         for (users) |user| {

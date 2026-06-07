@@ -881,7 +881,9 @@ fn parseParenOrAnonCallExpr(p: *Parser) node.Expr {
     if (!p.skipIf(.lparen)) return .dirty;
     if (p.on(.rparen)) {
         _ = p.next();
-        return .{ .anon_call = .{} };
+        var call: node.AnonCallExpr = .{};
+        call.head.position = call_at;
+        return .{ .anon_call = call };
     }
 
     const first = p.parseCallExprArg();

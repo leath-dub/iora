@@ -41,6 +41,7 @@ pub const Register = enum(u32) {
 };
 
 pub const Operation = enum {
+    nil,
     let,
     add,
     sub,
@@ -97,6 +98,10 @@ pub const Instruction = struct {
         inst: Instruction,
         writer: *std.Io.Writer,
     ) std.Io.Writer.Error!void {
+        if (inst.op == .nil) {
+            try writer.print("<optimized out>", .{});
+            return;
+        }
         try writer.print("{s}", .{@tagName(inst.op)});
         if (inst.id != .nil) {
             try writer.print(" ${d}", .{inst.id});
@@ -169,7 +174,7 @@ pub const FunUnit = struct {
         res.value_ptr.append(al, .{ .in = in, .ins = user }) catch @panic("OOM");
     }
 
-    pub fn replaceUsers(fu: *FunUnit, use: Register, rep: Register) void {
+    pub fn replaceUsers(fu: *FunUnit, al: std.mem.Allocator, use: Register, rep: Register) void {
         const users_opt = fu.users.getPtr(use);
         if (users_opt == null) {
             return;
@@ -181,7 +186,7 @@ pub const FunUnit = struct {
             const ins = in.getByRef(user.ins);
             if (ins.id == use) {
                 // Remove the phi node itself
-                _ = in.instructions.orderedRemove(user.ins);
+                ins.op = .nil;
                 continue;
             }
             // Replace any arguments pointing to this phi node
@@ -193,6 +198,7 @@ pub const FunUnit = struct {
         }
 
         // Remove users entry
+        users.deinit(al);
         _ = fu.users.remove(use);
     }
 
@@ -278,11 +284,15 @@ pub const Block = struct {
         unreachable;
     }
 
+    pub fn lastInstruction(blk: *Block) InstructionRef {
+        return @intCast(blk.instructions.items.len - 1);
+    }
+
     pub fn assign(blk: *Block, al: std.mem.Allocator, v: Var, inst: Instruction) InstructionRef {
         std.debug.assert(inst.id != .nil);
         _ = blk.add(al, inst);
         blk.values.put(al, v, inst.id) catch @panic("OOM");
-        return @intCast(blk.instructions.items.len - 1);
+        return blk.lastInstruction();
     }
 
     pub fn addPredecessor(blk: *Block, al: std.mem.Allocator, pred: BlockRef) void {
