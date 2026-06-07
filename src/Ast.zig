@@ -367,7 +367,7 @@ pub const Dumper = struct {
             }
         }
         switch (@typeInfo(T)) {
-            .@"union", .@"struct" => if (meta.hasMethod(T, "format")) {
+            .@"union", .@"struct" => if (meta.hasMethod(T, "format") and !@hasDecl(T, "hidden")) {
                 d.emitAuxData(name, "{f}", data_ref.*, count);
                 return true;
             },

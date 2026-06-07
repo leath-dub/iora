@@ -10,6 +10,17 @@ pub const Value = union(enum) {
     s16: i16,
     u8: u8,
     s8: i8,
+
+    pub fn format(
+        v: Value,
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        switch (v) {
+            inline else => |value, tag| {
+                try writer.print("{t} {d}", .{tag, value});
+            },
+        }
+    }
 };
 
 pub const Register = enum(u32) {
@@ -33,6 +44,7 @@ pub const Operation = enum {
     add,
     sub,
     mul,
+    div,
     jmp, // unconditional jump
     br, // conditional jump
     lt, // checks <
@@ -69,12 +81,39 @@ pub const Operand = union(enum) {
     label: []const u8,
     symbol: []const u8,
     register: Register,
+
+    pub fn format(
+        o: Operand,
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        switch (o) {
+            .nil => try writer.writeAll("nil"),
+            .value => |v| try v.format(writer),
+            .label => |l| try writer.print(":{s}", .{l}),
+            .symbol => |s| try writer.print("{s}", .{s}),
+            .register => |r| try writer.print("%{f}", .{r}),
+        }
+    }
 };
 
 pub const Instruction = struct {
     op: Operation,
     id: Register = .nil,
     args: [2]Operand = .{ .nil, .nil },
+
+    pub fn format(
+        inst: Instruction,
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        try writer.print("{s}", .{@tagName(inst.op)});
+        if (inst.id != .nil) {
+            try writer.print(" %{d},", .{inst.id});
+        }
+        try writer.print(" {f}", .{inst.args[0]});
+        if (inst.args[1] != .nil) {
+            try writer.print(", {f}", .{inst.args[0]});
+        }
+    }
 };
 
 pub fn instruction0(op: Operation) Instruction {
@@ -112,9 +151,13 @@ pub const FunUnit = struct {
     pub fn allocBlock(fu: *FunUnit, al: std.mem.Allocator) BlockRef {
         fu.blocks.append(al, .{}) catch @panic("OOM");
         return @intCast(fu.blocks.items.len - 1);
-    } 
+    }
 
     pub fn blockPtr(fu: *FunUnit, id: BlockRef) *Block {
+        return &fu.blocks.items[id];
+    }
+
+    pub fn blockPtrConst(fu: *const FunUnit, id: BlockRef) *const Block {
         return &fu.blocks.items[id];
     }
 
@@ -125,6 +168,18 @@ pub const FunUnit = struct {
         fu.blocks.deinit(al);
     }
 
+    pub fn format(
+        fu: FunUnit,
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        if (fu.blocks.items.len == 0) {
+            try writer.writeAll("<empty function unit>");
+            return;
+        }
+        try (BlockFormatter{ .ref = 0, .unit = &fu }).format(writer);
+    }
+
+    pub const hidden = true;
     pub const dont_walk = true;
 };
 
@@ -175,5 +230,24 @@ pub const Block = struct {
 
     pub fn addSuccessor(blk: *Block, al: std.mem.Allocator, succ: BlockRef) void {
         blk.successors.append(al, succ) catch @panic("OOM");
+    }
+};
+
+pub const BlockFormatter = struct {
+    ref: BlockRef,
+    unit: *const FunUnit,
+
+    pub fn format(
+        bf: BlockFormatter,
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        try writer.print("Block({d}):\n", .{bf.ref});
+        const blk = bf.unit.blockPtrConst(bf.ref);
+        for (blk.instructions.items) |inst| {
+            try writer.print("  {f}\n", .{inst});
+        }
+        for (blk.successors.items) |succ| {
+            try (BlockFormatter{ .ref = succ, .unit = bf.unit }).format(writer);
+        }
     }
 };

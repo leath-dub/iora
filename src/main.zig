@@ -108,15 +108,24 @@ pub fn main(init: std.process.Init) !void {
     defer ib.deinit();
     Ast.walk(&ib, &ast.root.?);
 
+    var buf: [4096]u8 = undefined;
+    var stdout = std.Io.File.stdout().writer(ctx.io, &buf);
+
     const FunUnitCleaner = struct {
+        debug: *std.Io.Writer,
         allocator: std.mem.Allocator,
+
         pub fn enterFunDecl(fuc: *@This(), fun_decl: *node.FunDecl) void {
+            fun_decl.unit.format(fuc.debug) catch @panic("io error");
             fun_decl.unit.deinit(fuc.allocator);
         }
     };
 
-    var fuc: FunUnitCleaner = .{ .allocator = ctx.allocator };
-    Ast.walk(&fuc, &ast.root.?);
+    defer {
+        var fuc: FunUnitCleaner = .{ .debug = &stdout.interface, .allocator = ctx.allocator };
+        Ast.walk(&fuc, &ast.root.?);
+        stdout.flush() catch unreachable;
+    }
 
     // var cb = CBackend.init(&ctx, &type_store);
     // defer cb.deinit();

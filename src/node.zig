@@ -411,8 +411,8 @@ pub const Expr = union(enum) {
 
     pub fn register(expr: *Expr) *ir.Register {
         return switch (expr.*) {
-            .dirty => &.nil,
-            inline else => |foo| &foo.register,
+            .dirty => unreachable,
+            inline else => |*foo| &foo.register,
         };
     }
 
