@@ -360,7 +360,7 @@ pub const Dumper = struct {
         if (skip or getChild(data_ref) != null) {
             return false;
         }
-        // Ship .unset type references
+        // Skip .unset type references
         if (T == TypeRef) {
             if (data_ref.* == .unset) {
                 return false;

@@ -120,6 +120,18 @@ pub const Type = union(enum) {
             inline else => |*foo| &foo.head,
         };
     }
+
+    pub fn isLinear(ty: Type) bool {
+        return ty.headConst().flags.contains(.linear);
+    }
+
+    pub fn isWeak(ty: Type) bool {
+        return ty.headConst().flags.contains(.weak);
+    }
+
+    pub fn at(ty: Type) Code.Offset {
+        return ty.headConst().position;
+    }
 };
 
 pub const IdentType = struct {
@@ -633,6 +645,8 @@ pub const Flag = enum {
     last_child,
     resolving,
     fake,
+    linear,
+    weak,
 };
 
 pub const Symbol = struct {

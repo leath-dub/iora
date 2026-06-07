@@ -11,17 +11,17 @@ const mem = std.mem;
 pub const Store = struct {
     ctx: *GeneralContext,
     arena: std.heap.ArenaAllocator,
-    storage: std.ArrayList(Data) = .empty,
-    mapping: std.HashMapUnmanaged(Data, TypeRef, Data.Context, std.hash_map.default_max_load_percentage) = .empty,
+    storage: std.ArrayList(Info) = .empty,
+    mapping: std.HashMapUnmanaged(Info, TypeRef, Info.Context, std.hash_map.default_max_load_percentage) = .empty,
 
     pub fn init(ctx: *GeneralContext) Store {
         var store = Store{
             .ctx = ctx,
             .arena = ctx.createLifetime(),
-            .storage = std.ArrayList(Data).initCapacity(ctx.allocator, TypeRef.reserved()) catch @panic("OOM"),
+            .storage = std.ArrayList(Info).initCapacity(ctx.allocator, TypeRef.reserved()) catch @panic("OOM"),
         };
         store.storage.items.len = TypeRef.reserved();
-        @memset(store.storage.items[0..TypeRef.reserved()], .primitive);
+        @memset(store.storage.items[0..TypeRef.reserved()], .{});
         return store;
     }
 
@@ -37,18 +37,22 @@ pub const Store = struct {
 
         switch (t.*) {
             .builtin => |bi| {
-                switch (bi.token.type) {
+                const prim_t = base: switch (bi.token.type) {
                     inline else => |tag| {
                         if (@hasField(TypeRef, @tagName(tag))) {
-                            return @field(TypeRef, @tagName(tag));
+                            break :base @field(TypeRef, @tagName(tag));
                         }
+                        unreachable;
                     },
+                };
+                if (t.isLinear() or t.isWeak()) {
+                    return store.internInfoStable(.init(.{ .builtin = prim_t }, t));
                 }
-                unreachable;
+                return prim_t;
             },
             .coll => |coll| {
                 common.todo(coll.index_expr == null, "arrays", .{});
-                return store.internDataStable(.{ .slice = try store.internImpl(coll.value_type) });
+                return store.internInfoStable(.init(.{ .slice = try store.internImpl(coll.value_type) }, t));
             },
             .sum => |sum| {
                 var list = try scratch.alloc(SumField, sum.alts.len);
@@ -60,14 +64,14 @@ pub const Store = struct {
                         },
                         .type_decl => |*td| .{
                             .name = td.name.text(),
-                            .type = store.internDataStable(.{ .user = td }),
+                            .type = store.internInfoStable(.init(.{ .user = td }, t)),
                         },
                         .dirty => unreachable,
                     };
                 }
-                const res = store.internData(.{ .sum = .init(list) });
+                const res = store.internInfo(.init(.{ .sum = .init(list) }, t));
                 if (res.inserted) {
-                    res.freeze(.{ .sum = .init(try a.dupe(SumField, list)) });
+                    res.freeze(.init(.{ .sum = .init(try a.dupe(SumField, list)) }, t));
                 }
                 return res.id;
             },
@@ -76,9 +80,9 @@ pub const Store = struct {
                 for (tup.types, 0..) |*subt, i| {
                     list[i] = try store.internImpl(&subt.type);
                 }
-                const res = store.internData(.{ .tuple = .init(list) });
+                const res = store.internInfo(.init(.{ .tuple = .init(list) }, t));
                 if (res.inserted) {
-                    res.freeze(.{ .tuple = .init(try a.dupe(TypeRef, list)) });
+                    res.freeze(.init(.{ .tuple = .init(try a.dupe(TypeRef, list)) }, t));
                 }
                 return res.id;
             },
@@ -90,9 +94,9 @@ pub const Store = struct {
                         .type = try store.internImpl(&f.type),
                     };
                 }
-                const res = store.internData(.{ .@"struct" = .init(list) });
+                const res = store.internInfo(.init(.{ .@"struct" = .init(list) }, t));
                 if (res.inserted) {
-                    res.freeze(.{ .@"struct" = .init(try a.dupe(StructField, list)) });
+                    res.freeze(.init(.{ .@"struct" = .init(try a.dupe(StructField, list)) }, t));
                 }
                 return res.id;
             },
@@ -101,26 +105,26 @@ pub const Store = struct {
                 for (en.alts, 0..) |alt, i| {
                     list[i] = alt.name.text();
                 }
-                const res = store.internData(.{ .@"enum" = .init(list) });
+                const res = store.internInfo(.init(.{ .@"enum" = .init(list) }, t));
                 if (res.inserted) {
-                    res.freeze(.{ .@"enum" = .init(try a.dupe([]const u8, list)) });
+                    res.freeze(.init(.{ .@"enum" = .init(try a.dupe([]const u8, list)) }, t));
                 }
                 return res.id;
             },
             .ptr => |p| {
-                return store.internDataStable(.{
+                return store.internInfoStable(.init(.{
                     .ptr = try store.internImpl(p.child),
-                });
+                }, t));
             },
             .err => |e| {
-                return store.internDataStable(.{
+                return store.internInfoStable(.init(.{
                     .err = try store.internImpl(e.child),
-                });
+                }, t));
             },
             .type_of => |to| {
-                return store.internDataStable(.{
+                return store.internInfoStable(.init(.{
                     .type_of = try store.internImpl(to.child),
-                });
+                }, t));
             },
             .fun => |fun| {
                 var params = try scratch.alloc(Fun.Param, fun.params.len);
@@ -136,34 +140,34 @@ pub const Store = struct {
                     try store.internImpl(ret)
                 else
                     .unit;
-                const sig_res = store.internData(.{
+                const sig_res = store.internInfo(.init(.{
                     .fun_sig = .{
                         .params = params,
                         .return_type = return_type,
                     },
-                });
+                }, t));
                 if (sig_res.inserted) {
-                    sig_res.freeze(.{
+                    sig_res.freeze(.init(.{
                         .fun_sig = .{
                             .params = try a.dupe(Fun.Param, params),
                             .return_type = return_type,
                         },
-                    });
+                    }, t));
                 }
                 const sig = sig_res.id;
-                const res = store.internData(.{
+                const res = store.internInfo(.init(.{
                     .fun = .{
                         .signature = .{ .ref = sig },
                         .bindings = bindings,
                     },
-                });
+                }, t));
                 if (res.inserted) {
-                    res.freeze(.{
+                    res.freeze(.init(.{
                         .fun = .{
                             .signature = .{ .ref = sig },
                             .bindings = try a.dupe(node.Ident, bindings),
                         },
-                    });
+                    }, t));
                 }
                 return res.id;
             },
@@ -175,7 +179,7 @@ pub const Store = struct {
                             // Make sure the type decl is full resolved
                             td.type_ref = try store.internImpl(&td.type);
                         }
-                        return store.internDataStable(.{ .user = td });
+                        return store.internInfoStable(.init(.{ .user = td }, t));
                     },
                     .sub_type => |subt| return store.internImpl(&subt.type),
                     else => {},
@@ -185,7 +189,7 @@ pub const Store = struct {
             .selector => |sel| {
                 const resolved = sel.resolves_to.?;
                 switch (resolved.data) {
-                    .type_decl => |td| return store.internDataStable(.{ .user = td }),
+                    .type_decl => |td| return store.internInfoStable(.init(.{ .user = td }, t)),
                     .sub_type => |subt| return store.internImpl(&subt.type),
                     else => {},
                 }
@@ -197,22 +201,22 @@ pub const Store = struct {
 
     const InternResult = struct {
         id: TypeRef,
-        data_ptr: *Data,
+        info_ptr: *Info,
         inserted: bool,
         store: *Store,
 
-        fn freeze(res: InternResult, data: Data) void {
-            res.data_ptr.* = data;
-            res.store.storage.items[@intFromEnum(res.id)] = data;
+        fn freeze(res: InternResult, info: Info) void {
+            res.info_ptr.* = info;
+            res.store.storage.items[@intFromEnum(res.id)] = info;
         }
     };
 
-    fn internData(store: *Store, data: Data) InternResult {
-        const result = store.mapping.getOrPutContext(store.ctx.allocator, data, .{ .store = store }) catch @panic("OOM");
+    fn internInfo(store: *Store, info: Info) InternResult {
+        const result = store.mapping.getOrPutContext(store.ctx.allocator, info, .{ .store = store }) catch @panic("OOM");
         if (result.found_existing) {
             return .{
                 .id = result.value_ptr.*,
-                .data_ptr = result.key_ptr,
+                .info_ptr = result.key_ptr,
                 .inserted = false,
                 .store = store,
             };
@@ -222,26 +226,42 @@ pub const Store = struct {
         store.storage.items.len += 1;
         return .{
             .id = result.value_ptr.*,
-            .data_ptr = result.key_ptr,
+            .info_ptr = result.key_ptr,
             .inserted = true,
             .store = store,
         };
     }
 
-    pub fn internDataStable(store: *Store, data: Data) TypeRef {
-        const res = store.internData(data);
+    pub fn internInfoStable(store: *Store, info: Info) TypeRef {
+        const res = store.internInfo(info);
         if (res.inserted) {
-            res.freeze(data);
+            res.freeze(info);
         }
         return res.id;
     }
 
-    pub fn get(store: *const Store, id: TypeRef) Data {
+    pub fn get(store: *const Store, id: TypeRef) Info {
         return store.storage.items[@intFromEnum(id)];
     }
 
-    pub fn update(store: *Store, id: TypeRef, data: Data) void {
-        store.storage.items[@intFromEnum(id)] = data;
+    pub fn update(store: *Store, id: TypeRef, info: Info) void {
+        store.storage.items[@intFromEnum(id)] = info;
+    }
+
+    pub fn getBaseRef(store: *const Store, ref_: TypeRef) TypeRef {
+        var ref = ref_;
+        again: switch (store.get(ref).data) {
+            .user => |td| {
+                ref = td.type_ref;
+                continue :again store.get(ref).data;
+            },
+            .builtin => |prim| {
+                ref = prim;
+                continue :again store.get(prim).data;
+            },
+            else => {},
+        }
+        return ref;
     }
 
     pub fn deinit(store: *Store) void {
@@ -251,33 +271,193 @@ pub const Store = struct {
     }
 };
 
-pub const Data = union(enum) {
-    user: *node.TypeDecl,
-    fun: Fun,
-    fun_sig: Fun.Signature,
-    ptr: TypeRef,
-    slice: TypeRef,
-    err: TypeRef,
-    type_of: TypeRef,
-    sum: SumType,
-    tuple: TupleType,
-    @"enum": EnumType,
-    @"struct": StructType,
-    primitive,
+pub const Info = struct {
+    data: Data = .primitive,
+    flags: std.EnumSet(Flag) = .initEmpty(),
 
-    pub fn getUnderlyingType(d: Data, store: Store) Data {
-        return again: switch (d) {
-            .user => |u| continue :again store.get(u.type_ref),
-            else => |x| x,
-        };
+    pub fn init(data: Data, t: *const node.Type) Info {
+        var info: Info = .{};
+        if (t.isLinear()) {
+            info.flags.insert(.linear);
+        }
+        if (t.isWeak()) {
+            info.flags.insert(.weak);
+        }
+        info.data = data;
+        return info;
     }
 
+    pub fn fromData(data: Data) Info {
+        return .{ .data = data };
+    }
+
+    pub fn isLinear(info: Info) bool {
+        return info.flags.contains(.linear) and !info.isWeak();
+    }
+
+    pub fn isWeak(info: Info) bool {
+        return info.flags.contains(.weak);
+    }
+
+    pub const Context = struct {
+        store: *const Store,
+
+        pub fn hash(_: Context, info: Info) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            var it = info.flags.iterator();
+            while (it.next()) |fl| {
+                hasher.update(mem.asBytes(&fl));
+            }
+            switch (info.data) {
+                .user => |u| return @intFromPtr(u),
+                .fun => |fun| {
+                    hasher.update(mem.asBytes(&fun.signature.ref));
+                    for (fun.bindings) |binding| {
+                        hasher.update(mem.asBytes(&binding.head.position));
+                        hasher.update(binding.text());
+                    }
+                },
+                .fun_sig => |sig| {
+                    for (sig.params) |param| {
+                        hasher.update(mem.asBytes(&param.type));
+                        hasher.update(mem.asBytes(&param.unpack));
+                    }
+                    hasher.update(mem.asBytes(&sig.return_type));
+                },
+                .sum => |sum| {
+                    for (sum.fields) |field| {
+                        hasher.update(mem.asBytes(&field.type));
+                    }
+                    hasher.update(mem.asBytes(&Data.sum));
+                },
+                .tuple => |tuple| {
+                    for (tuple.types) |typ| {
+                        hasher.update(mem.asBytes(&typ));
+                    }
+                    hasher.update(mem.asBytes(&Data.tuple));
+                },
+                .@"struct" => |st| {
+                    for (st.fields) |f| {
+                        hasher.update(f.name);
+                        hasher.update(mem.asBytes(&f.type));
+                    }
+                },
+                .@"enum" => |en| {
+                    for (en.enumerators) |enumerator| {
+                        hasher.update(enumerator);
+                    }
+                },
+                .err => |e| {
+                    hasher.update(mem.asBytes(&Data.err));
+                    hasher.update(mem.asBytes(&e));
+                },
+                .type_of => |t| {
+                    hasher.update(mem.asBytes(&Data.type_of));
+                    hasher.update(mem.asBytes(&t));
+                },
+                .ptr => |p| {
+                    hasher.update(mem.asBytes(&Data.ptr));
+                    hasher.update(mem.asBytes(&p));
+                },
+                .slice => |s| {
+                    hasher.update(mem.asBytes(&Data.slice));
+                    hasher.update(mem.asBytes(&s));
+                },
+                inline else => |_, tag| hasher.update(mem.asBytes(&tag)),
+            }
+            return hasher.final();
+        }
+
+        pub fn eql(_: Context, ai: Info, bi: Info) bool {
+            if (!ai.flags.eql(bi.flags)) {
+                return false;
+            }
+            const a, const b = .{ ai.data, bi.data };
+            if (std.meta.activeTag(a) != std.meta.activeTag(b)) {
+                return false;
+            }
+            switch (a) {
+                .user => |u| return u == b.user,
+                .fun_sig => |sig| {
+                    if (sig.params.len != b.fun_sig.params.len) {
+                        return false;
+                    }
+                    for (sig.params, b.fun_sig.params) |pa, pb| {
+                        if (pa.type != pb.type) {
+                            return false;
+                        }
+                        if (pa.unpack != pb.unpack) {
+                            return false;
+                        }
+                    }
+                    return sig.return_type == b.fun_sig.return_type;
+                },
+                .fun => |fun| {
+                    if (fun.signature.ref != b.fun.signature.ref) {
+                        return false;
+                    }
+                    if (fun.bindings.len != b.fun.bindings.len) {
+                        return false;
+                    }
+                    for (fun.bindings, 0..) |binding, i| {
+                        const binding_b = b.fun.bindings[i];
+                        if (!std.meta.eql(binding, binding_b)) {
+                            return false;
+                        }
+                    }
+                    return true;
+                },
+                .sum => |sum| {
+                    if (sum.fields.len != b.sum.fields.len) {
+                        return false;
+                    }
+                    for (sum.fields, b.sum.fields) |fa, fb| {
+                        if (fa.type != fb.type) {
+                            return false;
+                        }
+                    }
+                    return true;
+                },
+                .tuple => |tuple| {
+                    if (tuple.types.len != b.tuple.types.len) {
+                        return false;
+                    }
+                    return mem.eql(TypeRef, tuple.types, b.tuple.types);
+                },
+                .@"struct" => |st| {
+                    if (st.fields.len != b.@"struct".fields.len) {
+                        return false;
+                    }
+                    for (st.fields, b.@"struct".fields) |fa, fb| {
+                        if (fa.type != fb.type or
+                            !mem.eql(u8, fa.name, fb.name))
+                        {
+                            return false;
+                        }
+                    }
+                },
+                .err => |e| return e == b.err,
+                .type_of => |t| return t == b.type_of,
+                .ptr => |p| return p == b.ptr,
+                .slice => |s| return s == b.slice,
+                else => {},
+            }
+            return true;
+        }
+    };
+
     pub fn formatWithStore(
-        data: Data,
+        info: Info,
         store: *const Store,
         writer: *std.Io.Writer,
     ) std.Io.Writer.Error!void {
-        switch (data) {
+        if (info.isLinear()) {
+            try writer.writeAll("linear ");
+        }
+        if (info.isWeak()) {
+            try writer.writeAll("linear weak ");
+        }
+        switch (info.data) {
             .user => |user| {
                 try writer.writeAll(user.name.text());
             },
@@ -378,148 +558,45 @@ pub const Data = union(enum) {
                 }
                 try writer.writeByte('}');
             },
+            .builtin => |prim_t| try formatView(store, prim_t).format(writer),
             .primitive => try writer.writeAll("primitive type"),
         }
     }
 
-    pub const Context = struct {
-        store: *const Store,
+    pub const Flag = enum {
+        linear,
+        weak,
+    };
+};
 
-        pub fn hash(_: Context, data: Data) u64 {
-            var hasher = std.hash.Wyhash.init(0);
-            switch (data) {
-                .user => |u| return @intFromPtr(u),
-                .fun => |fun| {
-                    hasher.update(mem.asBytes(&fun.signature.ref));
-                    for (fun.bindings) |binding| {
-                        hasher.update(mem.asBytes(&binding.head.position));
-                        hasher.update(binding.text());
-                    }
-                },
-                .fun_sig => |sig| {
-                    for (sig.params) |param| {
-                        hasher.update(mem.asBytes(&param.type));
-                        hasher.update(mem.asBytes(&param.unpack));
-                    }
-                    hasher.update(mem.asBytes(&sig.return_type));
-                },
-                .sum => |sum| {
-                    for (sum.fields) |field| {
-                        hasher.update(mem.asBytes(&field.type));
-                    }
-                    hasher.update(mem.asBytes(&Data.sum));
-                },
-                .tuple => |tuple| {
-                    for (tuple.types) |typ| {
-                        hasher.update(mem.asBytes(&typ));
-                    }
-                    hasher.update(mem.asBytes(&Data.tuple));
-                },
-                .@"struct" => |st| {
-                    for (st.fields) |f| {
-                        hasher.update(f.name);
-                        hasher.update(mem.asBytes(&f.type));
-                    }
-                },
-                .@"enum" => |en| {
-                    for (en.enumerators) |enumerator| {
-                        hasher.update(enumerator);
-                    }
-                },
-                .err => |e| {
-                    hasher.update(mem.asBytes(&Data.err));
-                    hasher.update(mem.asBytes(&e));
-                },
-                .type_of => |t| {
-                    hasher.update(mem.asBytes(&Data.type_of));
-                    hasher.update(mem.asBytes(&t));
-                },
-                .ptr => |p| {
-                    hasher.update(mem.asBytes(&Data.ptr));
-                    hasher.update(mem.asBytes(&p));
-                },
-                .slice => |s| {
-                    hasher.update(mem.asBytes(&Data.slice));
-                    hasher.update(mem.asBytes(&s));
-                },
-                inline else => |_, tag| hasher.update(mem.asBytes(&tag)),
-            }
-            return hasher.final();
-        }
+pub const Data = union(enum) {
+    user: *node.TypeDecl,
+    fun: Fun,
+    fun_sig: Fun.Signature,
+    ptr: TypeRef,
+    slice: TypeRef,
+    err: TypeRef,
+    type_of: TypeRef,
+    sum: SumType,
+    tuple: TupleType,
+    @"enum": EnumType,
+    @"struct": StructType,
+    builtin: TypeRef, // for flagged instances of primitive types
+    primitive,
 
-        pub fn eql(_: Context, a: Data, b: Data) bool {
-            if (std.meta.activeTag(a) != std.meta.activeTag(b)) {
-                return false;
-            }
-            switch (a) {
-                .user => |u| return u == b.user,
-                .fun_sig => |sig| {
-                    if (sig.params.len != b.fun_sig.params.len) {
-                        return false;
-                    }
-                    for (sig.params, b.fun_sig.params) |pa, pb| {
-                        if (pa.type != pb.type) {
-                            return false;
-                        }
-                        if (pa.unpack != pb.unpack) {
-                            return false;
-                        }
-                    }
-                    return sig.return_type == b.fun_sig.return_type;
-                },
-                .fun => |fun| {
-                    if (fun.signature.ref != b.fun.signature.ref) {
-                        return false;
-                    }
-                    if (fun.bindings.len != b.fun.bindings.len) {
-                        return false;
-                    }
-                    for (fun.bindings, 0..) |binding, i| {
-                        const binding_b = b.fun.bindings[i];
-                        if (!std.meta.eql(binding, binding_b)) {
-                            return false;
-                        }
-                    }
-                    return true;
-                },
-                .sum => |sum| {
-                    if (sum.fields.len != b.sum.fields.len) {
-                        return false;
-                    }
-                    for (sum.fields, b.sum.fields) |fa, fb| {
-                        if (fa.type != fb.type) {
-                            return false;
-                        }
-                    }
-                    return true;
-                },
-                .tuple => |tuple| {
-                    if (tuple.types.len != b.tuple.types.len) {
-                        return false;
-                    }
-                    return mem.eql(TypeRef, tuple.types, b.tuple.types);
-                },
-                .@"struct" => |st| {
-                    if (st.fields.len != b.@"struct".fields.len) {
-                        return false;
-                    }
-                    for (st.fields, b.@"struct".fields) |fa, fb| {
-                        if (fa.type != fb.type or
-                            !mem.eql(u8, fa.name, fb.name))
-                        {
-                            return false;
-                        }
-                    }
-                },
-                .err => |e| return e == b.err,
-                .type_of => |t| return t == b.type_of,
-                .ptr => |p| return p == b.ptr,
-                .slice => |s| return s == b.slice,
-                else => {},
-            }
+    pub fn isBuiltinCallable(d: Data, store: Store) bool {
+        if (d == .type_of and store.getBaseRef(d.type_of).isBuiltin()) {
             return true;
         }
-    };
+        return false;
+    }
+
+    pub fn getUnderlyingType(d: Data, store: Store) Data {
+        return again: switch (d) {
+            .user => |u| continue :again store.get(u.type_ref).data,
+            else => |x| x,
+        };
+    }
 
     pub const TupleType = struct {
         types: []TypeRef,
@@ -637,7 +714,7 @@ pub fn TypeRefStrict(comptime T: type) type {
         pub fn get(r: @This(), store: Store) T {
             inline for (std.meta.fields(Data)) |f| {
                 if (f.type == T) {
-                    return @field(store.get(r.ref), f.name);
+                    return @field(store.get(r.ref).data, f.name);
                 }
             }
             unreachable;

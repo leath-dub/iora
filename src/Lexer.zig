@@ -121,6 +121,8 @@ const token_descriptors = [_]TokenDescriptor{
     TokenDescriptor.initKeyword(.@"extern"),
     TokenDescriptor.initKeyword(.intern),
     TokenDescriptor.initKeyword(.import),
+    TokenDescriptor.initKeyword(.weak),
+    TokenDescriptor.initKeyword(.linear),
 };
 
 pub const TokenType = blk: {

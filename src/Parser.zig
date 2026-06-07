@@ -369,6 +369,8 @@ fn parseType(p: *Parser) node.Type {
         .str,
         .unit,
         => .{ .builtin = p.createBuiltinType() },
+        .linear => p.parseLinearType(),
+        .weak => p.parseWeakType(),
         .lbracket => .{ .coll = p.parseCollType() },
         .@"struct" => .{ .@"struct" = p.parseStructType() },
         .@"enum" => .{ .@"enum" = p.parseEnumType() },
@@ -391,6 +393,8 @@ fn parseType(p: *Parser) node.Type {
             .bool,
             .str,
             .unit,
+            .linear,
+            .weak,
             .lbracket,
             .@"struct",
             .@"enum",
@@ -569,6 +573,24 @@ fn parseStructField(p: *Parser) node.StructField {
         field.default = p.parseExpr();
     }
     return ok(field);
+}
+
+fn parseLinearType(p: *Parser) node.Type {
+    if (!p.skipIf(.linear)) {
+        return .dirty;
+    }
+    var lin_t = p.parseType();
+    lin_t.head().flags.insert(.linear);
+    return lin_t;
+}
+
+fn parseWeakType(p: *Parser) node.Type {
+    if (!p.skipIf(.weak)) {
+        return .dirty;
+    }
+    var weak_t = p.parseType();
+    weak_t.head().flags.insert(.weak);
+    return weak_t;
 }
 
 fn parseCollType(p: *Parser) node.CollType {

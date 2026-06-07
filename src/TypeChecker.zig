@@ -66,7 +66,7 @@ pub fn exitFunDecl(tc: *TypeChecker, fun_decl: *node.FunDecl) void {
 pub fn exitFunParam(tc: *TypeChecker, param: *node.FunParam) void {
     param.type_ref = tc.type_store.intern(&param.type);
     if (param.unpack) {
-        const param_td = tc.type_store.get(param.type_ref).getUnderlyingType(tc.type_store.*);
+        const param_td = tc.type_store.get(param.type_ref).data.getUnderlyingType(tc.type_store.*);
         switch (param_td) {
             .@"struct", .tuple, .slice => {},
             else => {
@@ -162,21 +162,40 @@ pub fn exitDefDecl(tc: *TypeChecker, def_decl: *node.DefDecl) void {
     }
 }
 
-fn tryCastTo(_: *TypeChecker, from_type: *TypeRef, to_type: TypeRef) void {
-    switch (from_type.*) {
-        .f32 => switch (to_type) {
+fn tryCastTo(tc: *TypeChecker, from_type: *TypeRef, to_type: TypeRef) void {
+    const from_ti = tc.type_store.get(from_type.*);
+    const to_ti = tc.type_store.get(to_type);
+    if (from_ti.isWeak() and to_ti.isLinear()) {
+        return;
+    }
+
+    const from_und = tc.type_store.getBaseRef(from_type.*);
+    const to_und = tc.type_store.getBaseRef(to_type);
+
+    std.log.debug("{f} -> {f}", .{
+        ty.formatView(tc.type_store, from_und),
+        ty.formatView(tc.type_store, to_und),
+    });
+
+    if (from_und == to_und) {
+        from_type.* = to_type;
+        return;
+    }
+
+    switch (from_und) {
+        .f32 => switch (to_und) {
             .f32, .f64 => from_type.* = to_type,
             else => {},
         },
-        .f64 => switch (to_type) {
+        .f64 => switch (to_und) {
             .f64 => from_type.* = to_type,
             else => {},
         },
-        .s32 => switch (to_type) {
+        .s32 => switch (to_und) {
             .s64, .f32, .f64 => from_type.* = to_type,
             else => {},
         },
-        .u32 => switch (to_type) {
+        .u32 => switch (to_und) {
             .s64, .u64, .f64 => from_type.* = to_type,
             else => {},
         },
@@ -185,9 +204,9 @@ fn tryCastTo(_: *TypeChecker, from_type: *TypeRef, to_type: TypeRef) void {
 }
 
 pub fn exitTypeExpr(tc: *TypeChecker, type_expr: *node.TypeExpr) void {
-    type_expr.type_ref = tc.type_store.internDataStable(.{
+    type_expr.type_ref = tc.type_store.internInfoStable(.fromData(.{
         .type_of = tc.type_store.intern(type_expr.type),
-    });
+    }));
 }
 
 pub fn exitTokenExpr(tc: *TypeChecker, token_expr: *node.TokenExpr) void {
@@ -214,7 +233,7 @@ pub fn exitTokenExpr(tc: *TypeChecker, token_expr: *node.TokenExpr) void {
         },
         .float_lit => .f32,
         else => if (tu.isBuiltinTokenType(token.type)) type_: {
-            break :type_ tc.type_store.internDataStable(.{ .type_of = tu.toBuiltinType(token.type) });
+            break :type_ tc.type_store.internInfoStable(.fromData(.{ .type_of = tu.toBuiltinType(token.type) }));
         } else return,
     };
 }
@@ -222,7 +241,7 @@ pub fn exitTokenExpr(tc: *TypeChecker, token_expr: *node.TokenExpr) void {
 pub fn exitIdentExpr(tc: *TypeChecker, ident_expr: *node.IdentExpr) void {
     if (ident_expr.is_inferred and ident_expr.hint != .unset) {
         const hint = tc.type_store.get(ident_expr.hint);
-        again: switch (hint) {
+        again: switch (hint.data) {
             .user => |td| {
                 if (td.scope.get(ident_expr.name.text())) |sym| {
                     ident_expr.type_ref = switch (sym.data) {
@@ -231,7 +250,7 @@ pub fn exitIdentExpr(tc: *TypeChecker, ident_expr: *node.IdentExpr) void {
                     };
                     return;
                 }
-                continue :again tc.type_store.get(td.type_ref);
+                continue :again tc.type_store.get(td.type_ref).data;
             },
             .@"enum" => |en| {
                 for (en.enumerators) |enumerator| {
@@ -277,7 +296,7 @@ pub fn exitSelectorExpr(tc: *TypeChecker, selector_expr: *node.SelectorExpr) voi
         // of symbols which don't resolve to types (e.g. variable declaration).
         const lhs_t = selector_expr.value.getType().*;
 
-        const lhs_td = tc.type_store.get(lhs_t);
+        const lhs_td = tc.type_store.get(lhs_t).data;
         // First see if the selector is accessing a declaration of user
         // defined type
         const field_name = selector_expr.field.text();
@@ -386,11 +405,11 @@ pub fn exitUnaryExpr(tc: *TypeChecker, unary_expr: *node.UnaryExpr) void {
         .amper => {
             // Add pointer to the type
             unary_expr.type_ref =
-                tc.type_store.internDataStable(.{ .ptr = unary_expr.type_ref });
+                tc.type_store.internInfoStable(.fromData(.{ .ptr = unary_expr.type_ref }));
         },
         .star => {
             // Derefernce any pointer
-            const td = tc.type_store.get(unary_expr.type_ref);
+            const td = tc.type_store.get(unary_expr.type_ref).data;
             if (td != .ptr) {
                 tc.raise(
                     unary_expr.op.offset(tc.code),
@@ -428,11 +447,11 @@ fn propagateSymbolType(tc: *TypeChecker, type_ref: *TypeRef, name: *const node.I
             type_ref.* = tc.type_store.intern(&t);
         },
         .type_decl => |t| {
-            type_ref.* = tc.type_store.internDataStable(.{
-                .type_of = tc.type_store.internDataStable(.{
+            type_ref.* = tc.type_store.internInfoStable(.fromData(.{
+                .type_of = tc.type_store.internInfoStable(.fromData(.{
                     .user = t,
-                }),
-            });
+                })),
+            }));
         },
         inline .sub_type => |t| {
             type_ref.* = tc.type_store.intern(&node.Type{ .type_of = .{ .child = &t.type } });
@@ -663,7 +682,7 @@ const CallArgBinder = struct {
             };
             if (param.unpack and !arg_unpack) {
                 const param_td = tc.type_store
-                    .get(param.type)
+                    .get(param.type).data
                     .getUnderlyingType(tc.type_store.*);
                 switch (param_td) {
                     .@"struct" => |st| {
@@ -687,9 +706,9 @@ const CallArgBinder = struct {
                                 .type = .fake,
                                 .span = "<fake>",
                             },
-                            .type_ref = tc.type_store.internDataStable(.{
+                            .type_ref = tc.type_store.internInfoStable(.fromData(.{
                                 .type_of = param.type,
-                            }),
+                            })),
                         };
 
                         const fake_call = node.CallExpr{
@@ -748,9 +767,9 @@ const CallArgBinder = struct {
                                 .type = .fake,
                                 .span = "<fake>",
                             },
-                            .type_ref = tc.type_store.internDataStable(.{
+                            .type_ref = tc.type_store.internInfoStable(.fromData(.{
                                 .type_of = param.type,
-                            }),
+                            })),
                         };
 
                         const fake_call = node.CallExpr{
@@ -886,7 +905,7 @@ const CallArgBinder = struct {
 };
 
 fn bindCall(tc: *TypeChecker, call_t: TypeRef, call: anytype) TypeRef {
-    const callable = tc.type_store.get(call_t);
+    const callable = tc.type_store.get(call_t).data;
     return switch (callable) {
         .fun => res: {
             var binder = CallArgBinder.fromFun(tc, .{ .ref = call_t });
@@ -907,7 +926,7 @@ fn bindCall(tc: *TypeChecker, call_t: TypeRef, call: anytype) TypeRef {
                 // * Struct
                 // * Primitive type
 
-                const user_data = tc.type_store.get(cast_to);
+                const user_data = tc.type_store.get(cast_to).data;
                 const canon_user_data = user_data.getUnderlyingType(tc.type_store.*);
 
                 switch (canon_user_data) {
@@ -929,6 +948,19 @@ fn bindCall(tc: *TypeChecker, call_t: TypeRef, call: anytype) TypeRef {
                         const tup_param_bindings = synthParamBindingsFromTuple(tc.ast, al, tup);
                         var binder = CallArgBinder.init(tc, "field", cast_to, tup_sig, tup_param_bindings);
 
+                        call.call_bindings = binder.bind(call.head.position, call.args);
+                    },
+                    .builtin => {
+                        const builtin_param_bindings: []const node.Ident = &.{
+                            .{
+                                .token = .{
+                                    .type = .ident,
+                                    .span = tc.ast.num(0),
+                                },
+                            },
+                        };
+                        const builtin_sig: ty.Fun.Signature = .initCast(cast_to);
+                        var binder = CallArgBinder.init(tc, "cast operand", cast_to, builtin_sig, builtin_param_bindings);
                         call.call_bindings = binder.bind(call.head.position, call.args);
                     },
                     else => {},
@@ -1003,7 +1035,7 @@ const CallableInfo = struct {
 
 // Needs to be inline otherwise I get valgrind errors :O
 inline fn getCallableInfo(tc: *TypeChecker, callable_t: TypeRef) CallableInfo {
-    const callable = tc.type_store.get(callable_t);
+    const callable = tc.type_store.get(callable_t).data;
     again: switch (callable) {
         .fun => |fun| {
             return .{
@@ -1037,13 +1069,13 @@ inline fn getCallableInfo(tc: *TypeChecker, callable_t: TypeRef) CallableInfo {
             };
         },
         .type_of => |cast_to| {
-            continue :again tc.type_store.get(cast_to);
+            continue :again tc.type_store.get(cast_to).data;
         },
         .user => |user| {
-            continue :again tc.type_store.get(user.type_ref);
+            continue :again tc.type_store.get(user.type_ref).data;
         },
-        .primitive => {
-            const callable_td = tc.type_store.get(callable_t);
+        inline .builtin, .primitive => {
+            const callable_td = tc.type_store.get(callable_t).data;
             const cast_to = callable_td.type_of;
             return .{
                 .item_desc = "cast operand",
@@ -1058,7 +1090,7 @@ inline fn getCallableInfo(tc: *TypeChecker, callable_t: TypeRef) CallableInfo {
                 },
             };
         },
-        else => |x| common.todoNoReturn("{any}", .{x}),
+        else => |x| common.todoNoReturn("callable info: {any}", .{x}),
     }
     unreachable;
 }
@@ -1085,14 +1117,15 @@ pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
         }
 
         const callable_t = call.callable.getType().*;
-        const callable_td = tc.type_store.get(callable_t);
+        const callable_td = tc.type_store.get(callable_t).data;
         const callable_info = tc.getCallableInfo(callable_t);
         defer _ = tc.ctx().scratch.reset(.retain_capacity);
 
         for (callable_info.param_bindings, 0..) |pb, i| {
             if (std.mem.eql(u8, b.name, pb.text())) {
                 const param = callable_info.signature.params[i];
-                if (callable_td == .type_of and callable_td.type_of.isBuiltin()) {
+                // TODO support cast of user defined types (not just builtins)
+                if (callable_td.isBuiltinCallable(tc.type_store.*)) {
                     tc.tryCastTo(ex.getType(), param.type);
                     if (ex.getType().* != param.type) {
                         tc.raise(
@@ -1125,9 +1158,9 @@ pub fn exitCallExpr(tc: *TypeChecker, call: *node.CallExpr) void {
 }
 
 pub fn enterAnonCallExpr(tc: *TypeChecker, anon_call: *node.AnonCallExpr) void {
-    anon_call.type_ref = tc.bindCall(tc.type_store.internDataStable(.{
+    anon_call.type_ref = tc.bindCall(tc.type_store.internInfoStable(.fromData(.{
         .type_of = anon_call.hint,
-    }), anon_call);
+    })), anon_call);
 }
 
 pub fn exitAnonCallExpr(tc: *TypeChecker, anon_call: *node.AnonCallExpr) void {
@@ -1180,8 +1213,33 @@ pub fn exitAnonCallExpr(tc: *TypeChecker, anon_call: *node.AnonCallExpr) void {
     }
 }
 
-pub fn enterType(_: *TypeChecker, _: *node.Type) Ast.ChildDisposition {
-    return .skip;
+pub fn exitType(tc: *TypeChecker, t: *node.Type) void {
+    if (t.isWeak() and !t.isLinear()) {
+        tc.raise(t.at(), "cannot specify non-linear type as 'weak'", .{});
+    }
+}
+
+pub fn exitStructType(tc: *TypeChecker, struct_type: *node.StructType) void {
+    if (struct_type.head.flags.contains(.linear)) {
+        // If the type is linear, no need to check the fields for linearity
+        return;
+    }
+
+    const encl: *node.Type = @fieldParentPtr("struct", struct_type);
+    const encl_t = tc.type_store.intern(encl);
+
+    // Enclosing type is not linear, make sure no fields are linear
+    for (struct_type.fields) |f| {
+        if (tc.type_store.get(f.type_ref).isLinear()) {
+            tc.raise(
+                struct_type.head.position,
+                "type '{f}' must be marked linear as it's field {s} is linear",
+                .{
+                    ty.formatView(tc.type_store, encl_t),
+                    f.name.text(),
+                });
+        }
+    }
 }
 
 fn push(tc: *TypeChecker, ref: *node.Scope) void {
