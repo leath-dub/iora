@@ -1,5 +1,6 @@
 /// SSA based IR
 const std = @import("std");
+const GeneralContext = @import("GeneralContext.zig");
 
 pub const Value = union(enum) {
     u64: u64,
@@ -17,7 +18,7 @@ pub const Value = union(enum) {
     ) std.Io.Writer.Error!void {
         switch (v) {
             inline else => |value, tag| {
-                try writer.print("{t} {d}", .{tag, value});
+                try writer.print("{t} {d}", .{ tag, value });
             },
         }
     }
@@ -50,12 +51,11 @@ pub const Operation = enum {
     lt, // checks <
     gt, // checks >
     eq, // checks equality
-    arg, // adds argument to next function call
     call,
     phi,
 };
 
-pub const operand_count = std.EnumMap(Operation, u8).init(.{
+pub const operand_count = std.EnumMap(Operation, i8).init(.{
     .let = 1,
     .add = 2,
     .sub = 2,
@@ -65,18 +65,11 @@ pub const operand_count = std.EnumMap(Operation, u8).init(.{
     .lt = 2,
     .gt = 2,
     .eq = 2,
-    .arg = 1,
-    .call = 1,
-    .phi = 1, // phi in our IR only takes one operand as we represent
-    // phi(x, y, z) as
-    //
-    // phi x
-    // phi y
-    // phi z
+    .call = -1,
+    .phi = -1,
 });
 
 pub const Operand = union(enum) {
-    nil,
     value: Value,
     label: []const u8,
     symbol: []const u8,
@@ -87,11 +80,10 @@ pub const Operand = union(enum) {
         writer: *std.Io.Writer,
     ) std.Io.Writer.Error!void {
         switch (o) {
-            .nil => try writer.writeAll("nil"),
             .value => |v| try v.format(writer),
             .label => |l| try writer.print(":{s}", .{l}),
             .symbol => |s| try writer.print("{s}", .{s}),
-            .register => |r| try writer.print("%{f}", .{r}),
+            .register => |r| try writer.print("${f}", .{r}),
         }
     }
 };
@@ -99,7 +91,7 @@ pub const Operand = union(enum) {
 pub const Instruction = struct {
     op: Operation,
     id: Register = .nil,
-    args: [2]Operand = .{ .nil, .nil },
+    args: []Operand = &.{},
 
     pub fn format(
         inst: Instruction,
@@ -107,31 +99,29 @@ pub const Instruction = struct {
     ) std.Io.Writer.Error!void {
         try writer.print("{s}", .{@tagName(inst.op)});
         if (inst.id != .nil) {
-            try writer.print(" %{d},", .{inst.id});
+            try writer.print(" ${d}", .{inst.id});
         }
-        try writer.print(" {f}", .{inst.args[0]});
-        if (inst.args[1] != .nil) {
-            try writer.print(", {f}", .{inst.args[0]});
+        for (inst.args, 0..) |arg, i| {
+            if (i != 0 or inst.id != .nil) {
+                try writer.writeByte(',');
+            }
+            try writer.print(" {f}", .{arg});
         }
     }
 };
 
-pub fn instruction0(op: Operation) Instruction {
-    return .{ .op = op };
-}
-
-pub fn instruction1(op: Operation, arg: Operand) Instruction {
-    return .{ .op = op, .args = .{ arg, .nil } };
-}
-
-pub fn instruction2(op: Operation, arg0: Operand, arg1: Operand) Instruction {
-    return .{ .op = op, .args = .{ arg0, arg1 } };
-}
-
+pub const InstructionRef = u32;
 pub const BlockRef = u32;
+
+pub const User = struct {
+    in: BlockRef,
+    ins: InstructionRef,
+};
 
 pub const FunUnit = struct {
     blocks: std.ArrayList(Block) = .empty,
+    sealed_blocks: std.AutoHashMapUnmanaged(BlockRef, void) = .empty,
+    users: std.AutoHashMapUnmanaged(Register, std.ArrayList(User)) = .empty,
     current: BlockRef = 0,
     last_register: u32 = 0,
     last_var: u32 = 0,
@@ -161,11 +151,62 @@ pub const FunUnit = struct {
         return &fu.blocks.items[id];
     }
 
+    pub fn registerUsers(fu: *FunUnit, al: std.mem.Allocator, in: BlockRef, user: InstructionRef) void {
+        const ins = fu.blockPtr(in).getByRef(user);
+        fu.addUser(al, ins.id, in, user); // add self usage
+        for (ins.args) |arg| {
+            if (arg == .register) {
+                fu.addUser(al, arg.register, in, user);
+            }
+        }
+    }
+
+    pub fn addUser(fu: *FunUnit, al: std.mem.Allocator, use: Register, in: BlockRef, user: InstructionRef) void {
+        const res = fu.users.getOrPut(al, use) catch @panic("OOM");
+        if (!res.found_existing) {
+            res.value_ptr.* = .empty;
+        }
+        res.value_ptr.append(al, .{ .in = in, .ins = user }) catch @panic("OOM");
+    }
+
+    pub fn replaceUsers(fu: *FunUnit, use: Register, rep: Register) void {
+        const users_opt = fu.users.getPtr(use);
+        if (users_opt == null) {
+            return;
+        }
+        const users = users_opt.?;
+
+        for (users.items) |*user| {
+            const in = fu.blockPtr(user.in);
+            const ins = in.getByRef(user.ins);
+            if (ins.id == use) {
+                // Remove the phi node itself
+                _ = in.instructions.orderedRemove(user.ins);
+                continue;
+            }
+            // Replace any arguments pointing to this phi node
+            for (ins.args) |*arg| {
+                if (arg.* == .register and arg.register == use) {
+                    arg.register = rep;
+                }
+            }
+        }
+
+        // Remove users entry
+        _ = fu.users.remove(use);
+    }
+
     pub fn deinit(fu: *FunUnit, al: std.mem.Allocator) void {
         for (fu.blocks.items) |*blk| {
             blk.deinit(al);
         }
         fu.blocks.deinit(al);
+        fu.sealed_blocks.deinit(al);
+        var it = fu.users.iterator();
+        while (it.next()) |e| {
+            e.value_ptr.*.deinit(al);
+        }
+        fu.users.deinit(al);
     }
 
     pub fn format(
@@ -203,12 +244,14 @@ pub const Var = enum(u32) {
 pub const Block = struct {
     instructions: std.ArrayList(Instruction) = .empty,
     values: std.AutoHashMapUnmanaged(Var, Register) = .empty,
+    incomplete_phis: std.AutoHashMapUnmanaged(Var, Register) = .empty,
     predecessors: std.ArrayList(BlockRef) = .empty,
     successors: std.ArrayList(BlockRef) = .empty,
 
     pub fn deinit(blk: *Block, al: std.mem.Allocator) void {
         blk.instructions.deinit(al);
         blk.values.deinit(al);
+        blk.incomplete_phis.deinit(al);
         blk.predecessors.deinit(al);
         blk.successors.deinit(al);
     }
@@ -218,10 +261,28 @@ pub const Block = struct {
         return inst.id;
     }
 
-    pub fn assign(blk: *Block, al: std.mem.Allocator, v: Var, inst: Instruction) void {
+    pub fn getByRefConst(blk: *const Block, id: InstructionRef) *const Instruction {
+        return &blk.instructions.items[@intCast(id)];
+    }
+
+    pub fn getByRef(blk: *Block, id: InstructionRef) *Instruction {
+        return &blk.instructions.items[@intCast(id)];
+    }
+
+    pub fn getInstructionRef(blk: *Block, reg: Register) InstructionRef {
+        for (blk.instructions.items, 0..) |ins, i| {
+            if (ins.id == reg) {
+                return @intCast(i);
+            }
+        }
+        unreachable;
+    }
+
+    pub fn assign(blk: *Block, al: std.mem.Allocator, v: Var, inst: Instruction) InstructionRef {
         std.debug.assert(inst.id != .nil);
         _ = blk.add(al, inst);
         blk.values.put(al, v, inst.id) catch @panic("OOM");
+        return @intCast(blk.instructions.items.len - 1);
     }
 
     pub fn addPredecessor(blk: *Block, al: std.mem.Allocator, pred: BlockRef) void {
@@ -230,6 +291,10 @@ pub const Block = struct {
 
     pub fn addSuccessor(blk: *Block, al: std.mem.Allocator, succ: BlockRef) void {
         blk.successors.append(al, succ) catch @panic("OOM");
+    }
+
+    pub fn addIncompletePhi(blk: *Block, al: std.mem.Allocator, id: Var, reg: Register) void {
+        blk.incomplete_phis.put(al, id, reg) catch @panic("OOM");
     }
 };
 
