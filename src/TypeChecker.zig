@@ -172,11 +172,6 @@ fn tryCastTo(tc: *TypeChecker, from_type: *TypeRef, to_type: TypeRef) void {
     const from_und = tc.type_store.getBaseRef(from_type.*);
     const to_und = tc.type_store.getBaseRef(to_type);
 
-    std.log.debug("{f} -> {f}", .{
-        ty.formatView(tc.type_store, from_und),
-        ty.formatView(tc.type_store, to_und),
-    });
-
     if (from_und == to_und) {
         from_type.* = to_type;
         return;
@@ -1231,13 +1226,10 @@ pub fn exitStructType(tc: *TypeChecker, struct_type: *node.StructType) void {
     // Enclosing type is not linear, make sure no fields are linear
     for (struct_type.fields) |f| {
         if (tc.type_store.get(f.type_ref).isLinear()) {
-            tc.raise(
-                struct_type.head.position,
-                "type '{f}' must be marked linear as it's field {s} is linear",
-                .{
-                    ty.formatView(tc.type_store, encl_t),
-                    f.name.text(),
-                });
+            tc.raise(struct_type.head.position, "type '{f}' must be marked linear as it's field {s} is linear", .{
+                ty.formatView(tc.type_store, encl_t),
+                f.name.text(),
+            });
         }
     }
 }

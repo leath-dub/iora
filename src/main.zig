@@ -104,11 +104,19 @@ pub fn main(init: std.process.Init) !void {
     var tc = TypeChecker.init(&ast, &code, &type_store);
     try invokeListener(&ast, &code, &tc);
 
-    // var block = ctx.createLifetime();
-    // defer block.deinit();
-    // var ib = IrBuilder.init(&ctx, &type_store, &block);
-    // defer ib.deinit();
-    // Ast.walk(&ib, &ast.root.?);
+    var ib = IrBuilder.init(&ctx, &type_store);
+    defer ib.deinit();
+    Ast.walk(&ib, &ast.root.?);
+
+    const FunUnitCleaner = struct {
+        allocator: std.mem.Allocator,
+        pub fn enterFunDecl(fuc: *@This(), fun_decl: *node.FunDecl) void {
+            fun_decl.unit.deinit(fuc.allocator);
+        }
+    };
+
+    var fuc: FunUnitCleaner = .{ .allocator = ctx.allocator };
+    Ast.walk(&fuc, &ast.root.?);
 
     // var cb = CBackend.init(&ctx, &type_store);
     // defer cb.deinit();

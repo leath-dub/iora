@@ -12,9 +12,20 @@ pub const Value = union(enum) {
     s8: i8,
 };
 
-pub const Register = enum(usize) {
+pub const Register = enum(u32) {
     nil,
     _,
+
+    pub fn format(
+        r: Register,
+        w: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        if (r == .nil) {
+            try w.writeAll("nil");
+        } else {
+            try w.print("{d}", .{@intFromEnum(r)});
+        }
+    }
 };
 
 pub const Operation = enum {
@@ -78,38 +89,67 @@ pub fn instruction2(op: Operation, arg0: Operand, arg1: Operand) Instruction {
     return .{ .op = op, .args = .{ arg0, arg1 } };
 }
 
+pub const BlockRef = u32;
+
 pub const FunUnit = struct {
-    start: *Block = undefined,
-    current: *Block = undefined,
-    last_register: Register = .nil,
-    last_var: Var = .nil,
+    blocks: std.ArrayList(Block) = .empty,
+    current: BlockRef = 0,
+    last_register: u32 = 0,
+    last_var: u32 = 0,
 
     pub fn allocRegister(fu: *FunUnit, _inst: Instruction) Instruction {
         fu.last_register += 1;
         var inst = _inst;
-        inst.id = fu.last_register;
+        inst.id = @enumFromInt(fu.last_register);
         return inst;
     }
 
     pub fn allocVar(fu: *FunUnit) Var {
         fu.last_var += 1;
-        return fu.last_var;
+        return @enumFromInt(fu.last_var);
+    }
+
+    pub fn allocBlock(fu: *FunUnit, al: std.mem.Allocator) BlockRef {
+        fu.blocks.append(al, .{}) catch @panic("OOM");
+        return @intCast(fu.blocks.items.len - 1);
+    } 
+
+    pub fn blockPtr(fu: *FunUnit, id: BlockRef) *Block {
+        return &fu.blocks.items[id];
+    }
+
+    pub fn deinit(fu: *FunUnit, al: std.mem.Allocator) void {
+        for (fu.blocks.items) |*blk| {
+            blk.deinit(al);
+        }
+        fu.blocks.deinit(al);
     }
 
     pub const dont_walk = true;
 };
 
 // Unique identifier for a given variable inside a FunUnit
-pub const Var = enum(usize) {
+pub const Var = enum(u32) {
     nil,
     _,
+
+    pub fn format(
+        v: Var,
+        w: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        if (v == .nil) {
+            try w.writeAll("nil");
+        } else {
+            try w.print("{d}", .{@intFromEnum(v)});
+        }
+    }
 };
 
 pub const Block = struct {
     instructions: std.ArrayList(Instruction) = .empty,
     values: std.AutoHashMapUnmanaged(Var, Register) = .empty,
-    predecessors: std.ArrayList(*Block) = .empty,
-    successors: std.ArrayList(*Block) = .empty,
+    predecessors: std.ArrayList(BlockRef) = .empty,
+    successors: std.ArrayList(BlockRef) = .empty,
 
     pub fn deinit(blk: *Block, al: std.mem.Allocator) void {
         blk.instructions.deinit(al);
@@ -118,26 +158,22 @@ pub const Block = struct {
         blk.successors.deinit(al);
     }
 
-    pub fn add(blk: *Block, al: std.mem.Allocator, inst: Instruction) void {
+    pub fn add(blk: *Block, al: std.mem.Allocator, inst: Instruction) Register {
         blk.instructions.append(al, inst) catch @panic("OOM");
+        return inst.id;
     }
 
     pub fn assign(blk: *Block, al: std.mem.Allocator, v: Var, inst: Instruction) void {
         std.debug.assert(inst.id != .nil);
-        blk.add(al, inst);
-        blk.values.put(al, v, inst.id);
+        _ = blk.add(al, inst);
+        blk.values.put(al, v, inst.id) catch @panic("OOM");
     }
 
-    pub fn addPredecessor(blk: *Block, al: std.mem.Allocator, pred: *Block) void {
+    pub fn addPredecessor(blk: *Block, al: std.mem.Allocator, pred: BlockRef) void {
         blk.predecessors.append(al, pred) catch @panic("OOM");
     }
 
-    pub fn addSuccessor(blk: *Block, al: std.mem.Allocator, succ: *Block) void {
+    pub fn addSuccessor(blk: *Block, al: std.mem.Allocator, succ: BlockRef) void {
         blk.successors.append(al, succ) catch @panic("OOM");
-    }
-
-    pub fn link(pred: *Block, al: std.mem.Allocator, succ: *Block) void {
-        pred.addSuccessor(al, succ);
-        succ.addPredecessor(al, pred);
     }
 };

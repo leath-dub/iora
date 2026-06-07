@@ -383,6 +383,9 @@ pub const Dumper = struct {
                 return true;
             },
             .@"enum" => {
+                if (@hasField(T, "nil") and data_ref.* == .nil) {
+                    return false;
+                }
                 if (meta.hasMethod(T, "format")) {
                     d.emitAuxData(name, "{f}", data_ref.*, count);
                     return true;

@@ -409,6 +409,20 @@ pub const Expr = union(enum) {
         };
     }
 
+    pub fn register(expr: *Expr) *ir.Register {
+        return switch (expr.*) {
+            .dirty => &.nil,
+            inline else => |foo| &foo.register,
+        };
+    }
+
+    pub fn registerConst(expr: *const Expr) *const ir.Register {
+        return switch (expr.*) {
+            .dirty => &.nil,
+            inline else => |foo| &foo.register,
+        };
+    }
+
     pub fn at(expr: Expr) Code.Offset {
         return expr.headConst().position;
     }
@@ -452,7 +466,7 @@ pub const Expr = union(enum) {
                 try writer.writeByte(')');
             },
             .token_expr => |e| try writer.writeAll(e.token.span),
-            .type_expr => try writer.writeAll("<todo type>"),
+            .type_expr => try writer.writeAll("<type expr>"),
             .dirty => try writer.writeAll("<error>"),
         }
     }
@@ -465,6 +479,7 @@ pub const IdentExpr = struct {
     hint: TypeRef = .unset,
     type_ref: TypeRef = .unset,
     resolves_to: ?Symbol = null,
+    register: ir.Register = .nil,
 };
 
 pub const SelectorExpr = struct {
@@ -473,18 +488,21 @@ pub const SelectorExpr = struct {
     field: Ident = .{},
     type_ref: TypeRef = .unset,
     resolves_to: ?Symbol = null,
+    register: ir.Register = .nil,
 };
 
 pub const TokenExpr = struct {
     head: Head = .{},
     token: Token = .{},
     type_ref: TypeRef = .unset,
+    register: ir.Register = .nil,
 };
 
 pub const TypeExpr = struct {
     head: Head = .{},
     type: *Type = undefined,
     type_ref: TypeRef = .unset,
+    register: ir.Register = .nil,
 };
 
 pub const PostfixExpr = struct {
@@ -492,6 +510,7 @@ pub const PostfixExpr = struct {
     op: Token,
     operand: *Expr,
     type_ref: TypeRef = .unset,
+    register: ir.Register = .nil,
 };
 
 pub const UnaryExpr = struct {
@@ -499,6 +518,7 @@ pub const UnaryExpr = struct {
     op: Token,
     operand: *Expr,
     type_ref: TypeRef = .unset,
+    register: ir.Register = .nil,
 };
 
 pub const BinExpr = struct {
@@ -507,6 +527,7 @@ pub const BinExpr = struct {
     left: *Expr,
     right: *Expr,
     type_ref: TypeRef = .unset,
+    register: ir.Register = .nil,
 };
 
 pub const CallBindings = struct {
@@ -545,6 +566,7 @@ pub const CallExpr = struct {
     args: []CallExprArg = &.{},
     type_ref: TypeRef = .unset,
     call_bindings: ?CallBindings = null,
+    register: ir.Register = .nil,
 };
 
 pub const AnonCallExpr = struct {
@@ -553,6 +575,7 @@ pub const AnonCallExpr = struct {
     hint: TypeRef = .unset,
     type_ref: TypeRef = .unset,
     call_bindings: ?CallBindings = null,
+    register: ir.Register = .nil,
 };
 
 pub const CallExprArg = union(enum) {
@@ -607,6 +630,7 @@ pub const CollAccessExpr = struct {
     lvalue: *Expr,
     subscript: *CollSubscript,
     type_ref: TypeRef = .unset,
+    register: ir.Register = .nil,
 };
 
 pub const CollSubscript = union(enum) {
