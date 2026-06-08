@@ -11,6 +11,7 @@ const Parser = @import("Parser.zig");
 const node = @import("node.zig");
 const GeneralContext = @import("GeneralContext.zig");
 const ty = @import("type.zig");
+const ir = @import("ir.zig");
 
 // Semantic passes
 const ModuleScopeResolver = @import("ModuleScopeResolver.zig");
@@ -112,17 +113,17 @@ pub fn main(init: std.process.Init) !void {
     var stdout = std.Io.File.stdout().writer(ctx.io, &buf);
 
     const FunUnitCleaner = struct {
+        ctx: *GeneralContext,
         debug: *std.Io.Writer,
-        allocator: std.mem.Allocator,
 
         pub fn enterFunDecl(fuc: *@This(), fun_decl: *node.FunDecl) void {
-            fun_decl.unit.format(fuc.debug) catch @panic("io error");
-            fun_decl.unit.deinit(fuc.allocator);
+            (ir.FunUnitFormatter{ .ctx = fuc.ctx, .unit = fun_decl.unit }).format(fuc.debug) catch @panic("io error");
+            fun_decl.unit.deinit(fuc.ctx.allocator);
         }
     };
 
     defer {
-        var fuc: FunUnitCleaner = .{ .debug = &stdout.interface, .allocator = ctx.allocator };
+        var fuc: FunUnitCleaner = .{ .ctx = &ctx, .debug = &stdout.interface };
         Ast.walk(&fuc, &ast.root.?);
         stdout.flush() catch unreachable;
     }

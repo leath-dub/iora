@@ -73,6 +73,7 @@ pub const operand_count = std.EnumMap(Operation, i8).init(.{
 pub const Operand = union(enum) {
     value: Value,
     label: []const u8,
+    block: BlockRef,
     symbol: []const u8,
     register: Register,
 
@@ -83,6 +84,7 @@ pub const Operand = union(enum) {
         switch (o) {
             .value => |v| try v.format(writer),
             .label => |l| try writer.print(":{s}", .{l}),
+            .block => |b| try writer.print(":b{d}", .{b}),
             .symbol => |s| try writer.print("{s}", .{s}),
             .register => |r| try writer.print("${f}", .{r}),
         }
@@ -230,6 +232,46 @@ pub const FunUnit = struct {
     pub const dont_walk = true;
 };
 
+pub const FunUnitFormatter = struct {
+    ctx: *GeneralContext,
+    unit: FunUnit,
+    visited: std.AutoHashMapUnmanaged(BlockRef, void) = .empty,
+    reverse_ordered_blocks: std.ArrayList(BlockRef) = .empty,
+
+    pub fn format(
+        fuf: FunUnitFormatter,
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        if (fuf.unit.blocks.items.len == 0) {
+            try writer.writeAll("<empty function unit>");
+            return;
+        }
+
+        var f = fuf;
+        defer _ = f.ctx.scratch.reset(.retain_capacity);
+        f.enterBlock(f.ctx.scratch.allocator(), 0);
+
+        const blocks = f.reverse_ordered_blocks.items;
+
+        var i: isize = @intCast(blocks.len - 1);
+        while (i >= 0) : (i -= 1) {
+            const blk_ref = blocks[@intCast(i)];
+            try (BlockFormatter{ .ref = blk_ref, .unit = &f.unit }).format(writer);
+        }
+    }
+
+    fn enterBlock(f: *FunUnitFormatter, al: std.mem.Allocator, blk_ref: BlockRef) void {
+        if (f.visited.contains(blk_ref)) return;
+        f.visited.put(al, blk_ref, {}) catch @panic("OOM");
+
+        for (f.unit.blockPtrConst(blk_ref).successors.items) |succ| {
+            f.enterBlock(al, succ);
+        }
+
+        f.reverse_ordered_blocks.append(al, blk_ref) catch @panic("OOM");
+    }
+};
+
 // Unique identifier for a given variable inside a FunUnit
 pub const Var = enum(u32) {
     nil,
@@ -291,8 +333,12 @@ pub const Block = struct {
     pub fn assign(blk: *Block, al: std.mem.Allocator, v: Var, inst: Instruction) InstructionRef {
         std.debug.assert(inst.id != .nil);
         _ = blk.add(al, inst);
-        blk.values.put(al, v, inst.id) catch @panic("OOM");
+        blk.writeVar(al, v, inst.id);
         return blk.lastInstruction();
+    }
+
+    pub fn writeVar(blk: *Block, al: std.mem.Allocator, v: Var, reg: Register) void {
+        blk.values.put(al, v, reg) catch @panic("OOM");
     }
 
     pub fn addPredecessor(blk: *Block, al: std.mem.Allocator, pred: BlockRef) void {
@@ -316,13 +362,10 @@ pub const BlockFormatter = struct {
         bf: BlockFormatter,
         writer: *std.Io.Writer,
     ) std.Io.Writer.Error!void {
-        try writer.print("Block({d}):\n", .{bf.ref});
+        try writer.print("b{d}:\n", .{bf.ref});
         const blk = bf.unit.blockPtrConst(bf.ref);
         for (blk.instructions.items) |inst| {
             try writer.print("  {f}\n", .{inst});
-        }
-        for (blk.successors.items) |succ| {
-            try (BlockFormatter{ .ref = succ, .unit = bf.unit }).format(writer);
         }
     }
 };

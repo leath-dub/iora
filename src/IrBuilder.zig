@@ -2,6 +2,9 @@
 //! "Simple and Efficient Construction of Static Single Assignment Form":
 //!     https://c9x.me/compile/bib/braun13cc.pdf
 
+
+// TODO: add on the fly optimizations
+
 const std = @import("std");
 const node = @import("node.zig");
 const GeneralContext = @import("GeneralContext.zig");
@@ -34,7 +37,7 @@ pub fn enterFunParam(ib: *IrBuilder, fun_param: *node.FunParam) void {
     const user = unit.blockPtr(unit.current).assign(
         ib.ctx.allocator,
         allocParam(unit, fun_param),
-        unit.allocRegister(ib.ins1(.let, .{ .value = .{ .u64 = 0 } })),
+        unit.allocRegister(ib.ins(1, .let, .{ .{ .value = .{ .u64 = 0 } } })),
     );
     unit.registerUsers(ib.ctx.allocator, unit.current, user);
 }
@@ -49,7 +52,7 @@ pub fn exitVarDecl(ib: *IrBuilder, var_decl: *node.VarDecl) void {
     const user = unit.blockPtr(unit.current).assign(
         ib.ctx.allocator,
         allocVar(unit, var_decl),
-        unit.allocRegister(ib.ins1(.let, value)),
+        unit.allocRegister(ib.ins(1, .let, .{ value })),
     );
     unit.registerUsers(ib.ctx.allocator, unit.current, user);
     if (value == .register) {
@@ -59,36 +62,73 @@ pub fn exitVarDecl(ib: *IrBuilder, var_decl: *node.VarDecl) void {
 
 pub fn enterIfStmt(ib: *IrBuilder, if_stmt: *node.IfStmt) Ast.ChildDisposition {
     const unit = ib.currentUnit();
-    common.todo(if_stmt.else_arm != null, "must have else arm for now", .{});
 
-    const then_block = ib.allocBlock();
-    const else_block = ib.allocBlock();
-    const join_block = ib.allocBlock();
-    const entry_block = unit.current;
+    if (if_stmt.else_arm) |*else_arm| {
+        const then_block = ib.allocBlock();
+        const else_block = ib.allocBlock();
+        const join_block = ib.allocBlock();
+        const entry_block = unit.current;
 
-    unit.blockPtr(entry_block).addSuccessor(ib.ctx.allocator, then_block);
-    unit.blockPtr(entry_block).addSuccessor(ib.ctx.allocator, else_block);
+        Ast.walk(ib, &if_stmt.cond.expr);
+        const cond = if_stmt.cond.expr.register().*;
+        _ = unit.blockPtr(entry_block).add(
+            ib.ctx.allocator, 
+            ib.ins(3, .br, .{ .{ .register = cond }, .{ .block = then_block }, .{ .block = else_block } }));
+        unit.registerUsers(ib.ctx.allocator, entry_block, unit.blockPtr(entry_block).lastInstruction());
 
-    unit.blockPtr(then_block).addPredecessor(ib.ctx.allocator, entry_block);
-    unit.blockPtr(else_block).addPredecessor(ib.ctx.allocator, entry_block);
+        unit.blockPtr(entry_block).addSuccessor(ib.ctx.allocator, then_block);
+        unit.blockPtr(entry_block).addSuccessor(ib.ctx.allocator, else_block);
 
-    ib.sealBlock(unit, then_block);
-    ib.sealBlock(unit, else_block);
+        unit.blockPtr(then_block).addPredecessor(ib.ctx.allocator, entry_block);
+        unit.blockPtr(else_block).addPredecessor(ib.ctx.allocator, entry_block);
 
-    unit.current = then_block;
-    Ast.walk(ib, &if_stmt.then_arm);
-    const then_exit_block = unit.current;
-    unit.blockPtr(then_exit_block).addSuccessor(ib.ctx.allocator, join_block);
-    unit.blockPtr(join_block).addPredecessor(ib.ctx.allocator, then_exit_block);
+        ib.sealBlock(unit, then_block);
+        ib.sealBlock(unit, else_block);
 
-    unit.current = else_block;
-    Ast.walk(ib, &if_stmt.else_arm.?);
-    const else_exit_block = unit.current;
-    unit.blockPtr(else_exit_block).addSuccessor(ib.ctx.allocator, join_block);
-    unit.blockPtr(join_block).addPredecessor(ib.ctx.allocator, else_exit_block);
+        unit.current = then_block;
+        Ast.walk(ib, &if_stmt.then_arm);
+        const then_exit_block = unit.current;
+        unit.blockPtr(then_exit_block).addSuccessor(ib.ctx.allocator, join_block);
+        unit.blockPtr(join_block).addPredecessor(ib.ctx.allocator, then_exit_block);
 
-    ib.sealBlock(unit, join_block);
-    unit.current = join_block;
+        unit.current = else_block;
+        Ast.walk(ib, else_arm);
+        const else_exit_block = unit.current;
+        unit.blockPtr(else_exit_block).addSuccessor(ib.ctx.allocator, join_block);
+        unit.blockPtr(join_block).addPredecessor(ib.ctx.allocator, else_exit_block);
+
+        ib.sealBlock(unit, join_block);
+        unit.current = join_block;
+    } else {
+        const then_block = ib.allocBlock();
+        const join_block = ib.allocBlock();
+        const entry_block = unit.current;
+
+        Ast.walk(ib, &if_stmt.cond.expr);
+        const cond = if_stmt.cond.expr.register().*;
+        _ = unit.blockPtr(entry_block).add(
+            ib.ctx.allocator, 
+            ib.ins(3, .br, .{ .{ .register = cond }, .{ .block = then_block }, .{ .block = join_block } }));
+        unit.registerUsers(ib.ctx.allocator, entry_block, unit.blockPtr(entry_block).lastInstruction());
+
+        unit.blockPtr(entry_block).addSuccessor(ib.ctx.allocator, then_block);
+        unit.blockPtr(then_block).addPredecessor(ib.ctx.allocator, entry_block);
+
+        ib.sealBlock(unit, then_block);
+
+        unit.current = then_block;
+        Ast.walk(ib, &if_stmt.then_arm);
+        const then_exit_block = unit.current;
+        unit.blockPtr(then_exit_block).addSuccessor(ib.ctx.allocator, join_block);
+        unit.blockPtr(join_block).addPredecessor(ib.ctx.allocator, then_exit_block);
+
+
+        unit.blockPtr(entry_block).addSuccessor(ib.ctx.allocator, join_block);
+        unit.blockPtr(join_block).addPredecessor(ib.ctx.allocator, entry_block);
+
+        ib.sealBlock(unit, join_block);
+        unit.current = join_block;
+    }
 
     return .skip;
 }
@@ -114,7 +154,7 @@ pub fn exitTokenExpr(ib: *IrBuilder, token_expr: *node.TokenExpr) void {
             const unit = ib.currentUnit();
             token_expr.register = unit.blockPtr(unit.current).add(
                 ib.ctx.allocator,
-                unit.allocRegister(ib.ins1(.let, .{ .value = .{ .u64 = lit.value } })),
+                unit.allocRegister(ib.ins(1, .let, .{ .{ .value = .{ .u64 = lit.value } } })),
             );
         },
         else => unreachable,
@@ -138,10 +178,13 @@ pub fn exitBinExpr(ib: *IrBuilder, bin_expr: *node.BinExpr) void {
             bin_expr.register = unit.blockPtr(unit.current).add(
                 ib.ctx.allocator,
                 unit.allocRegister(
-                    ib.ins2(
+                    ib.ins(
+                        2,
                         op,
-                        .{ .register = bin_expr.left.register().* },
-                        .{ .register = bin_expr.right.register().* },
+                        .{
+                            .{ .register = bin_expr.left.register().* },
+                            .{ .register = bin_expr.right.register().* },
+                        },
                     ),
                 ),
             );
@@ -158,7 +201,7 @@ pub fn exitAssign(ib: *IrBuilder, assign: *node.Assign) void {
         ib.ctx.allocator,
         id,
         unit.allocRegister(
-            ib.ins1(.let, .{ .register = assign.rvalue.registerConst().* }),
+            ib.ins(1, .let, .{ .{ .register = assign.rvalue.registerConst().* } }),
         ),
     );
     unit.registerUsers(ib.ctx.allocator, unit.current, user);
@@ -220,7 +263,7 @@ fn readVarRec(ib: *IrBuilder, blk_ref: ir.BlockRef, id: ir.Var) ir.Register {
     if (!unit.sealed_blocks.contains(blk_ref)) {
         reg = blk.add(
             ib.ctx.allocator,
-            unit.allocRegister(ib.ins0(.phi)),
+            unit.allocRegister(ib.ins(0, .phi, .{})),
         );
         unit.registerUsers(ib.ctx.allocator, blk_ref, blk.lastInstruction());
         blk.addIncompletePhi(ib.ctx.allocator, id, reg);
@@ -231,23 +274,13 @@ fn readVarRec(ib: *IrBuilder, blk_ref: ir.BlockRef, id: ir.Var) ir.Register {
         // Break cycles with operandless phi
         reg = blk.add(
             ib.ctx.allocator,
-            unit.allocRegister(ib.ins0(.phi)),
+            unit.allocRegister(ib.ins(0, .phi, .{})),
         );
         unit.registerUsers(ib.ctx.allocator, blk_ref, blk.lastInstruction());
-        const user = blk.assign(
-            ib.ctx.allocator,
-            id,
-            unit.allocRegister(ib.ins1(.let, .{ .register = reg })),
-        );
-        unit.registerUsers(ib.ctx.allocator, blk_ref, user);
+        blk.writeVar(ib.ctx.allocator, id, reg);
         reg = ib.addPhiOperands(blk_ref, id, reg);
     }
-    const user = blk.assign(
-        ib.ctx.allocator,
-        id,
-        unit.allocRegister(ib.ins1(.let, .{ .register = reg })),
-    );
-    unit.registerUsers(ib.ctx.allocator, blk_ref, user);
+    blk.writeVar(ib.ctx.allocator, id, reg);
     return reg;
 }
 
@@ -256,8 +289,8 @@ fn addPhiOperands(ib: *IrBuilder, blk_ref: ir.BlockRef, id: ir.Var, phi: ir.Regi
     const blk = unit.blockPtr(blk_ref);
 
     const phi_ins = blk.getInstructionRef(phi);
-    const ins = blk.getByRef(phi_ins);
-    std.debug.assert(ins.args.len == 0);
+    const ins_ = blk.getByRef(phi_ins);
+    std.debug.assert(ins_.args.len == 0);
 
     var args: std.AutoHashMapUnmanaged(ir.Register, void) = .empty;
     defer _ = ib.ctx.scratch.reset(.retain_capacity);
@@ -274,7 +307,7 @@ fn addPhiOperands(ib: *IrBuilder, blk_ref: ir.BlockRef, id: ir.Var, phi: ir.Regi
         args_v.append(ib.ctx.scratch.allocator(), .{ .register = r.* }) catch @panic("OOM");
     }
 
-    ins.args = ib.arena.allocator().dupe(ir.Operand, args_v.items) catch @panic("OOM");
+    ins_.args = ib.arena.allocator().dupe(ir.Operand, args_v.items) catch @panic("OOM");
 
     // 'tryRemoveTrivialPhi' allocates in scratch allocator
     defer _ = ib.ctx.scratch.reset(.retain_capacity);
@@ -287,8 +320,8 @@ fn tryRemoveTrivialPhi(ib: *IrBuilder, blk_ref: ir.BlockRef, phi: ir.Register) i
 
     var same: ir.Register = .nil;
     const ins_ref = blk.getInstructionRef(phi);
-    const ins = blk.getByRef(ins_ref);
-    for (ins.args) |arg| {
+    const ins_ = blk.getByRef(ins_ref);
+    for (ins_.args) |arg| {
         if (arg.register == same or arg.register == phi) {
             continue;
         }
@@ -333,22 +366,14 @@ fn sealBlock(ib: *IrBuilder, fu: *ir.FunUnit, blk_ref: ir.BlockRef) void {
     fu.sealed_blocks.put(ib.ctx.allocator, blk_ref, {}) catch @panic("OOM");
 }
 
-fn ins0(ib: *IrBuilder, op: ir.Operation) ir.Instruction {
-    _ = ib;
-    return .{ .op = op };
-}
-
-fn ins1(ib: *IrBuilder, op: ir.Operation, arg: ir.Operand) ir.Instruction {
-    const args = ib.arena.allocator().alloc(ir.Operand, 1) catch @panic("OOM");
-    args[0] = arg;
-    return .{ .op = op, .args = args };
-}
-
-fn ins2(ib: *IrBuilder, op: ir.Operation, arg0: ir.Operand, arg1: ir.Operand) ir.Instruction {
-    const args = ib.arena.allocator().alloc(ir.Operand, 2) catch @panic("OOM");
-    args[0] = arg0;
-    args[1] = arg1;
-    return .{ .op = op, .args = args };
+fn ins(ib: *IrBuilder, comptime arg_count: usize, op: ir.Operation, args: [arg_count]ir.Operand) ir.Instruction {
+    if (arg_count == 0) {
+        return .{ .op = op };
+    }
+    return .{
+        .op = op,
+        .args = ib.arena.allocator().dupe(ir.Operand, &args) catch @panic("OOM"),
+    };
 }
 
 fn allocVar(unit: *ir.FunUnit, var_decl: *node.VarDecl) ir.Var {
