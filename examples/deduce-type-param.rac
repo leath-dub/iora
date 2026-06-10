@@ -3,3 +3,13 @@
 // to resolve to a type parameter declared after a parameter
 // declared before
 fun func(xs: []X, def X: type) {}
+
+// Or maybe syntax like this to be more explicit...
+fun func(xs: []X, def X: type = ?) {}
+fun func(xs: [len]u8, def len: u64 = ?) {}
+
+// Or even more explicit
+fun func(xs: []X?, def X?: type) {}
+
+// Or this...
+fun func(xs: []$X, def $X: type) {}
