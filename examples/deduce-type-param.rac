@@ -1,0 +1,5 @@
+// 'def's in the param list are inserted into the scope in
+// a pre-pass (much like how the module scope is). This allows you
+// to resolve to a type parameter declared after from a parameter
+// declared before
+fun func(xs: []X, def X: type) {}
