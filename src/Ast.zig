@@ -44,6 +44,12 @@ pub fn deinit(ast: *Ast) void {
                     if (@hasField(T, "label_scope")) {
                         value.label_scope.deinit(sc.ctx.allocator);
                     }
+                    if (@hasField(T, "symbol") and @hasField(@TypeOf(value.symbol), "label_scope")) {
+                        value.symbol.label_scope.deinit(sc.ctx.allocator);
+                    }
+                    if (@hasField(T, "symbol") and @hasField(@TypeOf(value.symbol), "scope")) {
+                        value.symbol.scope.deinit(sc.ctx.allocator);
+                    }
                 },
             }
         }
@@ -352,7 +358,7 @@ pub const Dumper = struct {
 
     fn emitAuxData(d: *Dumper, comptime name: []const u8, comptime fmt: []const u8, data: anytype, count: u32) void {
         d.bind(d.writer.writeAll(if (count == 0) "(" else ", "));
-        d.bind(d.writer.print("{s}: " ++ fmt, .{ name, data }));
+        d.bind(d.writer.print("{s} = " ++ fmt, .{ name, data }));
     }
 
     fn handleAuxData(d: *Dumper, comptime name: []const u8, comptime T: type, data_ref: anytype, count: u32) bool {

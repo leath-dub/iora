@@ -93,7 +93,7 @@ pub fn enterDecl(mr: *ModuleScopeResolver, decl: *node.Decl) Ast.ChildDispositio
 
                     const type_name = fun_decl.type_name.?;
                     if (common.resolve(mr.top(), &type_name)) |symbol| {
-                        if (symbol.data != .type_decl) {
+                        if (symbol.data != .type) {
                             mr.raise(
                                 type_name.head.position,
                                 "expected {s} to be a type",
@@ -102,10 +102,9 @@ pub fn enterDecl(mr: *ModuleScopeResolver, decl: *node.Decl) Ast.ChildDispositio
                             break :ret .skip;
                         }
 
-                        mr.push(&symbol.data.type_decl.scope);
-                        defer mr.pop(&symbol.data.type_decl.scope);
-
+                        mr.push(&symbol.data.type.scope);
                         mr.insert(fun_decl);
+                        mr.pop(&symbol.data.type.scope);
                     } else {
                         mr.raise(
                             type_name.head.position,
@@ -143,28 +142,18 @@ fn resolveSelector(symbol: node.Symbol, field: *const node.Ident, out: *?node.Sy
     defer out.* = final;
 
     if (final) |s| {
-        again: switch (s.data) {
-            .type_decl => |td| {
-                // First try the type scope
-                final = common.resolveLocal(&td.scope, field);
-
-                // Next try local sub-scope
-                if (final == null) {
-                    const fallback_scope = switch (td.type) {
-                        .tuple => |*tup| &tup.scope,
-                        .sum => |*sum| &sum.scope,
-                        .@"enum" => |*en| &en.scope,
-                        .selector => |*sel| blk: {
-                            if (sel.resolves_to) |ss| {
-                                continue :again ss.data;
-                            }
-                            break :blk null;
-                        },
-                        else => null,
-                    };
-                    if (fallback_scope) |fs| {
-                        final = common.resolveLocal(fs, field);
+        switch (s.data) {
+            .type => |t| {
+                var type_opt: ?*node.Symbol.Type = t;
+                while (type_opt) |tp| {
+                    final = common.resolveLocal(&tp.scope, field);
+                    if (final != null) {
+                        break;
                     }
+                    if (t.underlying_type != null) {
+                        break;
+                    }
+                    type_opt = t.underlying_type.?.data.type;
                 }
             },
             else => {},
@@ -173,15 +162,15 @@ fn resolveSelector(symbol: node.Symbol, field: *const node.Ident, out: *?node.Sy
 }
 
 pub fn enterSumType(mr: *ModuleScopeResolver, sum_type: *node.SumType) void {
-    mr.push(&sum_type.scope);
+    mr.push(sum_type.x(.scope));
 }
 
 pub fn exitSumType(mr: *ModuleScopeResolver, sum_type: *node.SumType) void {
-    mr.pop(&sum_type.scope);
+    mr.pop(sum_type.x(.scope));
 }
 
 pub fn enterTupleType(mr: *ModuleScopeResolver, tuple_type: *node.TupleType) void {
-    mr.push(&tuple_type.scope);
+    mr.push(tuple_type.x(.scope));
 }
 
 pub fn exitTupleType(mr: *ModuleScopeResolver, tuple_type: *node.TupleType) void {
@@ -189,18 +178,18 @@ pub fn exitTupleType(mr: *ModuleScopeResolver, tuple_type: *node.TupleType) void
     for (tuple_type.types, 0..) |*ty, index| {
         std.debug.assert(scope.insert(mr.ctx().allocator, .{
             .name = mr.ast.num(index),
-            .data = node.Symbol.Data.fromSymbolLike(ty),
+            .data = node.Symbol.Data.fromAlt(&ty.symbol),
         }) == null);
     }
-    mr.pop(&tuple_type.scope);
+    mr.pop(tuple_type.x(.scope));
 }
 
 pub fn enterStructType(mr: *ModuleScopeResolver, struct_type: *node.StructType) void {
-    mr.push(&struct_type.scope);
+    mr.push(struct_type.x(.scope));
 }
 
 pub fn exitStructType(mr: *ModuleScopeResolver, struct_type: *node.StructType) void {
-    mr.pop(&struct_type.scope);
+    mr.pop(struct_type.x(.scope));
 }
 
 pub fn enterCompStmt(mr: *ModuleScopeResolver, comp_stmt: *node.CompStmt) void {
@@ -212,31 +201,19 @@ pub fn exitCompStmt(mr: *ModuleScopeResolver, comp_stmt: *node.CompStmt) void {
 }
 
 pub fn enterEnumType(mr: *ModuleScopeResolver, enum_type: *node.EnumType) Ast.ChildDisposition {
-    mr.push(&enum_type.scope);
+    mr.push(enum_type.x(.scope));
     for (enum_type.alts) |*alt| {
+        alt.symbol.enclosed_by = .fromNode(enum_type);
         mr.insert(node.Symbol{
             .name = alt.name.text(),
-            .data = node.Symbol.Data.fromSymbolLike(alt),
-            .type_ctx = .{ .enum_type = enum_type },
+            .data = .fromAlt(&alt.symbol),
         });
     }
     return .skip; // no need to visit children as they are handled above
 }
 
-pub fn exitTypeDecl(_: *ModuleScopeResolver, type_decl: *node.TypeDecl) void {
-    // Amend type context when we realise that the enum was a child of
-    // a distinct type
-    if (type_decl.type == .@"enum") {
-        const en = type_decl.type.@"enum";
-        var it = en.scope.entries.iterator();
-        while (it.next()) |ent| {
-            ent.value_ptr.type_ctx = .{ .type_decl = type_decl };
-        }
-    }
-}
-
 pub fn exitEnumType(mr: *ModuleScopeResolver, enum_type: *node.EnumType) void {
-    mr.pop(&enum_type.scope);
+    mr.pop(enum_type.x(.scope));
 }
 
 pub fn enterIdentType(mr: *ModuleScopeResolver, ident_type: *node.IdentType) void {
@@ -249,7 +226,7 @@ pub fn enterIdentType(mr: *ModuleScopeResolver, ident_type: *node.IdentType) voi
 
     ident_type.resolves_to = common.resolve(mr.top(), name);
     if (ident_type.resolves_to) |symbol| {
-        if (symbol.data != .type_decl) {
+        if (symbol.data != .type) {
             mr.raise(position, "expected {s} to be a type", .{name.text()});
         }
     } else {
@@ -272,7 +249,7 @@ const AliasCycleDetector = struct {
         std.debug.assert(mr.pass == .alias_cycle);
 
         if (isAlias(type_decl)) {
-            type_decl.head.flags.insert(.resolving);
+            type_decl.symbol.is_resolving = true;
         }
     }
 
@@ -281,24 +258,24 @@ const AliasCycleDetector = struct {
         std.debug.assert(mr.pass == .alias_cycle);
 
         if (isAlias(type_decl)) {
-            var rhs = &type_decl.type;
-            while (switch (rhs.*) {
+            var rhs = switch (type_decl.type) {
                 .ident => |*id| id.resolves_to,
                 .selector => |*sel| sel.resolves_to,
                 else => null,
-            }) |symbol| {
+            };
+            while (rhs) |symbol| {
                 switch (symbol.data) {
-                    .type_decl => |sub_decl| {
-                        if (sub_decl.head.flags.contains(.resolving)) {
-                            mr.raise(sub_decl.head.position, "alias cycle detected", .{});
+                    .type => |sub_type| {
+                        if (sub_type.is_resolving) {
+                            mr.raise(symbol.source, "alias cycle detected", .{});
                             break;
                         }
-                        rhs = &symbol.data.type_decl.type;
+                        rhs = sub_type.underlying_type;
                     },
                     else => break,
                 }
             }
-            type_decl.head.flags.remove(.resolving);
+            type_decl.symbol.is_resolving = false;
         }
     }
 };
@@ -325,18 +302,14 @@ fn pop(mr: *ModuleScopeResolver, scope: *node.Scope) void {
 }
 
 fn insert(mr: *ModuleScopeResolver, symbol_: anytype) void {
-    const position = if (@TypeOf(symbol_) != node.Symbol)
-        symbol_.name.head.position
-    else
-        symbol_.head().position;
-    const symbol = if (@TypeOf(symbol_) != node.Symbol) node.Symbol.fromSymbolLike(symbol_) else symbol_;
+    const symbol = if (@TypeOf(symbol_) != node.Symbol) node.Symbol.fromNode(symbol_) else symbol_;
     if (mr.top().insert(mr.ctx().allocator, symbol)) |existing| {
         mr.raise(
-            position,
+            symbol.source,
             "{s} redeclared in this block; other declaration at {f}",
             .{
                 symbol.name,
-                mr.code.target(existing.head().position),
+                mr.code.target(existing.source),
             },
         );
     }

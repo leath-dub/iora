@@ -7,6 +7,7 @@ const Code = @import("Code.zig");
 const common = @import("common.zig");
 const TypeRef = @import("type_ref.zig").TypeRef;
 const ir = @import("ir.zig");
+const util = @import("util.zig");
 
 // TODO:
 // pub const Module = struct {
@@ -39,9 +40,18 @@ pub const VarDecl = struct {
     declarator: Token = .{},
     name: Ident = .{},
     type: ?Type = null,
-    type_ref: TypeRef = .unset,
     init_expr: ?Expr = null,
-    id: ir.Var = .nil,
+    symbol: Symbol.Var = .{ .kind = .@"var" },
+
+    pub const _S = util.Unwrap(@FieldType(@This(), "symbol"));
+
+    pub fn x(n: *@This(), comptime field: std.meta.FieldEnum(_S)) *@FieldType(_S, @tagName(field)) {
+        return &@field(n.symbol, @tagName(field));
+    }
+
+    pub fn xv(n: *const @This(), comptime field: std.meta.FieldEnum(_S)) @FieldType(_S, @tagName(field)) {
+        return @field(n.symbol, @tagName(field));
+    }
 };
 
 pub const DefDecl = struct {
@@ -49,9 +59,18 @@ pub const DefDecl = struct {
     type_name: ?Ident = null,
     name: Ident = .{},
     type: ?Type = null,
-    type_ref: TypeRef = .unset,
     init_expr: Expr = .dirty,
-    id: ir.Var = .nil,
+    symbol: Symbol.Var = .{ .kind = .def },
+
+    pub const _S = util.Unwrap(@FieldType(@This(), "symbol"));
+
+    pub fn x(n: *@This(), comptime field: std.meta.FieldEnum(_S)) *@FieldType(_S, @tagName(field)) {
+        return &@field(n.symbol, @tagName(field));
+    }
+
+    pub fn xv(n: *const @This(), comptime field: std.meta.FieldEnum(_S)) @FieldType(_S, @tagName(field)) {
+        return @field(n.symbol, @tagName(field));
+    }
 };
 
 const Linkage = enum {
@@ -67,10 +86,17 @@ pub const FunDecl = struct {
     linkage: Linkage = .external,
     return_type: ?Type = null,
     body: ?CompStmt = null,
-    scope: Scope = .{},
-    label_scope: LabelScope = .{},
-    type_ref: TypeRef = .unset,
-    unit: ir.FunUnit = .{},
+    symbol: Symbol.Fun = .{},
+
+    pub const _S = util.Unwrap(@FieldType(@This(), "symbol"));
+
+    pub fn x(n: *@This(), comptime field: std.meta.FieldEnum(_S)) *@FieldType(_S, @tagName(field)) {
+        return &@field(n.symbol, @tagName(field));
+    }
+
+    pub fn xv(n: *const @This(), comptime field: std.meta.FieldEnum(_S)) @FieldType(_S, @tagName(field)) {
+        return @field(n.symbol, @tagName(field));
+    }
 };
 
 pub const FunParam = struct {
@@ -78,18 +104,34 @@ pub const FunParam = struct {
     name: Ident = .{},
     type: Type = .dirty,
     unpack: bool = false,
-    type_ref: TypeRef = .unset,
-    id: ir.Var = .nil,
+    symbol: Symbol.Var = .{ .kind = .param },
+
+    pub const _S = util.Unwrap(@FieldType(@This(), "symbol"));
+
+    pub fn x(n: *@This(), comptime field: std.meta.FieldEnum(_S)) *@FieldType(_S, @tagName(field)) {
+        return &@field(n.symbol, @tagName(field));
+    }
+
+    pub fn xv(n: *const @This(), comptime field: std.meta.FieldEnum(_S)) @FieldType(_S, @tagName(field)) {
+        return @field(n.symbol, @tagName(field));
+    }
 };
 
 pub const TypeDecl = struct {
     head: Head = .{},
     name: Ident = .{},
     type: Type = .dirty,
-    // NOTE: this represents the underlying type
-    // not the distinct type created by the declaration
-    type_ref: TypeRef = .unset,
-    scope: Scope = .{},
+    symbol: Symbol.Type = .{},
+
+    pub const _S = util.Unwrap(@FieldType(@This(), "symbol"));
+
+    pub fn x(n: *@This(), comptime field: std.meta.FieldEnum(_S)) *@FieldType(_S, @tagName(field)) {
+        return &@field(n.symbol, @tagName(field));
+    }
+
+    pub fn xv(n: *const @This(), comptime field: std.meta.FieldEnum(_S)) @FieldType(_S, @tagName(field)) {
+        return @field(n.symbol, @tagName(field));
+    }
 };
 
 pub const Type = union(enum) {
@@ -132,6 +174,13 @@ pub const Type = union(enum) {
     pub fn at(ty: Type) Code.Offset {
         return ty.headConst().position;
     }
+
+    pub fn symbol(ty: *Type) Symbol {
+        return switch (ty.*) {
+            .dirty => unreachable,
+            inline else => |*conc| .fromNode(conc),
+        };
+    }
 };
 
 pub const IdentType = struct {
@@ -139,6 +188,7 @@ pub const IdentType = struct {
     name: Ident = .{},
     is_inferred: bool = false,
     resolves_to: ?Symbol = null,
+    symbol: Symbol.Type = .{},
 };
 
 pub const IdentOrSelector = union(enum) {
@@ -152,35 +202,69 @@ pub const SelectorType = struct {
     type: *IdentOrSelector = undefined,
     field: Ident = .{},
     resolves_to: ?Symbol = null,
+    symbol: Symbol.Type = .{},
 };
 
 pub const BuiltinType = struct {
     head: Head = .{},
     token: Token = .{},
+    symbol: Symbol.Type = .{},
 };
 
 pub const CollType = struct {
     head: Head = .{},
     index_expr: ?Expr = null,
     value_type: *Type = undefined,
+    symbol: Symbol.Type = .{},
 };
 
 pub const TupleType = struct {
     head: Head = .{},
     types: []SubType = &.{},
-    scope: Scope = .{},
+    symbol: Symbol.Type = .{},
+    callable: FunType = .{},
+
+    pub const _S = util.Unwrap(@FieldType(@This(), "symbol"));
+
+    pub fn x(n: *@This(), comptime field: std.meta.FieldEnum(_S)) *@FieldType(_S, @tagName(field)) {
+        return &@field(n.symbol, @tagName(field));
+    }
+
+    pub fn xv(n: *const @This(), comptime field: std.meta.FieldEnum(_S)) @FieldType(_S, @tagName(field)) {
+        return @field(n.symbol, @tagName(field));
+    }
 };
 
 pub const SubType = struct {
     head: Head = .{},
     type: Type = .dirty,
-    type_ref: TypeRef = .unset,
+    symbol: Symbol.Type = .{},
+
+    pub const _S = util.Unwrap(@FieldType(@This(), "symbol"));
+
+    pub fn x(n: *@This(), comptime field: std.meta.FieldEnum(_S)) *@FieldType(_S, @tagName(field)) {
+        return &@field(n.symbol, @tagName(field));
+    }
+
+    pub fn xv(n: *const @This(), comptime field: std.meta.FieldEnum(_S)) @FieldType(_S, @tagName(field)) {
+        return @field(n.symbol, @tagName(field));
+    }
 };
 
 pub const SumType = struct {
     head: Head = .{},
     alts: []TypeOrInlineDecl = &.{},
-    scope: Scope = .{},
+    symbol: Symbol.Type = .{},
+
+    pub const _S = util.Unwrap(@FieldType(@This(), "symbol"));
+
+    pub fn x(n: *@This(), comptime field: std.meta.FieldEnum(_S)) *@FieldType(_S, @tagName(field)) {
+        return &@field(n.symbol, @tagName(field));
+    }
+
+    pub fn xv(n: *const @This(), comptime field: std.meta.FieldEnum(_S)) @FieldType(_S, @tagName(field)) {
+        return @field(n.symbol, @tagName(field));
+    }
 };
 
 pub const TypeOrInlineDecl = union(enum) {
@@ -192,42 +276,86 @@ pub const TypeOrInlineDecl = union(enum) {
 pub const StructType = struct {
     head: Head = .{},
     fields: []StructField = &.{},
-    // TODO: remove uneccessary scope here.
-    scope: Scope = .{},
+    symbol: Symbol.Type = .{},
+    callable: FunType = .{},
+
+    pub const _S = util.Unwrap(@FieldType(@This(), "symbol"));
+
+    pub fn x(n: *@This(), comptime field: std.meta.FieldEnum(_S)) *@FieldType(_S, @tagName(field)) {
+        return &@field(n.symbol, @tagName(field));
+    }
+
+    pub fn xv(n: *const @This(), comptime field: std.meta.FieldEnum(_S)) @FieldType(_S, @tagName(field)) {
+        return @field(n.symbol, @tagName(field));
+    }
 };
 
 pub const StructField = struct {
     head: Head = .{},
     name: Ident = .{},
     type: Type = .dirty,
-    type_ref: TypeRef = .unset,
     default: ?Expr = null,
+    symbol: Symbol.Field = .{},
+
+    pub const _S = util.Unwrap(@FieldType(@This(), "symbol"));
+
+    pub fn x(n: *@This(), comptime field: std.meta.FieldEnum(_S)) *@FieldType(_S, @tagName(field)) {
+        return &@field(n.symbol, @tagName(field));
+    }
+
+    pub fn xv(n: *const @This(), comptime field: std.meta.FieldEnum(_S)) @FieldType(_S, @tagName(field)) {
+        return @field(n.symbol, @tagName(field));
+    }
 };
 
 pub const EnumType = struct {
     head: Head = .{},
     alts: []Enumerator = &.{},
-    scope: Scope = .{},
+    symbol: Symbol.Type = .{},
+
+    pub const _S = util.Unwrap(@FieldType(@This(), "symbol"));
+
+    pub fn x(n: *@This(), comptime field: std.meta.FieldEnum(_S)) *@FieldType(_S, @tagName(field)) {
+        return &@field(n.symbol, @tagName(field));
+    }
+
+    pub fn xv(n: *const @This(), comptime field: std.meta.FieldEnum(_S)) @FieldType(_S, @tagName(field)) {
+        return @field(n.symbol, @tagName(field));
+    }
 };
 
 pub const Enumerator = struct {
     head: Head = .{},
     name: Ident = .{},
+    symbol: Symbol.Enumerator = .{},
+
+    pub const _S = util.Unwrap(@FieldType(@This(), "symbol"));
+
+    pub fn x(n: *@This(), comptime field: std.meta.FieldEnum(_S)) *@FieldType(_S, @tagName(field)) {
+        return &@field(n.symbol, @tagName(field));
+    }
+
+    pub fn xv(n: *const @This(), comptime field: std.meta.FieldEnum(_S)) @FieldType(_S, @tagName(field)) {
+        return @field(n.symbol, @tagName(field));
+    }
 };
 
 pub const PtrType = struct {
     head: Head = .{},
     child: *Type = undefined,
+    symbol: Symbol.Type = .{},
 };
 
 pub const ErrType = struct {
     head: Head = .{},
     child: *Type = undefined,
+    symbol: Symbol.Type = .{},
 };
 
 pub const TypeOfType = struct {
     head: Head = .{},
     child: *Type = undefined,
+    symbol: Symbol.Type = .{},
 };
 
 pub const FunType = struct {
@@ -235,7 +363,17 @@ pub const FunType = struct {
     linkage: Linkage = .external,
     params: []FunParam = &.{},
     return_type: ?*Type = null,
-    scope: Scope = .{},
+    symbol: Symbol.Type = .{},
+
+    pub const _S = util.Unwrap(@FieldType(@This(), "symbol"));
+
+    pub fn x(n: *@This(), comptime field: std.meta.FieldEnum(_S)) *@FieldType(_S, @tagName(field)) {
+        return &@field(n.symbol, @tagName(field));
+    }
+
+    pub fn xv(n: *const @This(), comptime field: std.meta.FieldEnum(_S)) @FieldType(_S, @tagName(field)) {
+        return @field(n.symbol, @tagName(field));
+    }
 };
 
 pub const Ident = struct {
@@ -318,8 +456,18 @@ pub const SumTypeReduce = struct {
     declarator: Token = .{},
     name: Ident = .{},
     reduction: Type = .dirty,
-    type_ref: TypeRef = .unset,
     value: Expr = .dirty,
+    symbol: Symbol.Var = .{ .kind = .reduce },
+
+    pub const _S = util.Unwrap(@FieldType(@This(), "symbol"));
+
+    pub fn x(n: *@This(), comptime field: std.meta.FieldEnum(_S)) *@FieldType(_S, @tagName(field)) {
+        return &@field(n.symbol, @tagName(field));
+    }
+
+    pub fn xv(n: *const @This(), comptime field: std.meta.FieldEnum(_S)) @FieldType(_S, @tagName(field)) {
+        return @field(n.symbol, @tagName(field));
+    }
 };
 
 pub const CaseStmt = struct {
@@ -348,7 +496,17 @@ pub const CaseBinding = struct {
     declarator: Token = .{},
     name: Ident = .{},
     type: Type = .dirty,
-    type_ref: TypeRef = .unset,
+    symbol: Symbol.Var = .{ .kind = .case },
+
+    pub const _S = util.Unwrap(@FieldType(@This(), "symbol"));
+
+    pub fn x(n: *@This(), comptime field: std.meta.FieldEnum(_S)) *@FieldType(_S, @tagName(field)) {
+        return &@field(n.symbol, @tagName(field));
+    }
+
+    pub fn xv(n: *const @This(), comptime field: std.meta.FieldEnum(_S)) @FieldType(_S, @tagName(field)) {
+        return @field(n.symbol, @tagName(field));
+    }
 };
 
 pub const ReturnStmt = struct {
@@ -476,7 +634,7 @@ pub const IdentExpr = struct {
     head: Head = .{},
     name: Ident = .{},
     is_inferred: bool = false,
-    hint: TypeRef = .unset,
+    hint: ?Symbol = null,
     type_ref: TypeRef = .unset,
     resolves_to: ?Symbol = null,
     register: ir.Register = .nil,
@@ -531,6 +689,7 @@ pub const BinExpr = struct {
 };
 
 pub const CallBindings = struct {
+    kind: Kind = .call,
     bindings: []ArgBinding,
 
     pub fn format(
@@ -542,7 +701,7 @@ pub const CallBindings = struct {
             if (i != 0) {
                 try w.writeAll(", ");
             }
-            try w.print("{s}: ", .{binding.name});
+            try w.print("{s} = ", .{binding.name});
             if (binding.expr) |ex| {
                 try ex.format(w);
             } else {
@@ -551,6 +710,11 @@ pub const CallBindings = struct {
         }
         try w.writeByte(')');
     }
+
+    pub const Kind = enum {
+        call,
+        cast,
+    };
 
     pub const ArgBinding = struct {
         name: []const u8 = "",
@@ -572,7 +736,7 @@ pub const CallExpr = struct {
 pub const AnonCallExpr = struct {
     head: Head = .{},
     args: []CallExprArg = &.{},
-    hint: TypeRef = .unset,
+    hint: ?Symbol = null,
     type_ref: TypeRef = .unset,
     call_bindings: ?CallBindings = null,
     register: ir.Register = .nil,
@@ -603,7 +767,7 @@ pub const CallExprArg = union(enum) {
             },
             .labelled => |la| {
                 const un = if (la.unpack) ".." else "";
-                try writer.print("{s}{s}: {f}", .{ un, la.label.text(), la.expr });
+                try writer.print("{s}{s} = {f}", .{ un, la.label.text(), la.expr });
             },
             .expr => |ea| {
                 try ea.format(writer);
@@ -667,70 +831,117 @@ pub const SliceRange = struct {
 pub const Flag = enum {
     dirty,
     last_child,
-    resolving,
     fake,
     linear,
     weak,
 };
 
 pub const Symbol = struct {
-    name: []const u8,
+    name: []const u8 = "",
     data: Data,
-    type_ctx: ?TypeCtx = null,
+    source: Code.Offset = 0,
 
-    pub fn head(sym: Symbol) *Head {
-        return switch (sym.data) {
-            inline else => |foo| &foo.head,
-        };
-    }
-
-    pub fn fieldNameFromType(comptime T: type) ?[]const u8 {
-        inline for (std.meta.fields(Data)) |field| {
-            if (field.type == T) {
-                return field.name;
-            }
-        }
-    }
-
-    pub fn fromSymbolLike(n: anytype) Symbol {
+    pub fn fromNode(n: anytype) Symbol {
         return .{
-            .name = n.name.text(),
-            .data = Symbol.Data.fromSymbolLike(n),
+            .name = if (@hasField(@TypeOf(n.*), "name")) n.name.text() else "",
+            .data = .fromAlt(&n.symbol),
+            .source = n.head.position,
         };
     }
 
-    pub fn format(
-        s: Symbol,
-        w: *std.Io.Writer,
-    ) std.Io.Writer.Error!void {
+    pub fn varId(s: Symbol) ?ir.Var {
+        if (s.data != .@"var") {
+            return null;
+        }
+        return s.data.@"var".id;
+    }
+
+    pub fn scope(s: Symbol) ?*Scope {
         switch (s.data) {
-            inline else => |value| {
-                try w.print("{s}", .{common.unqualTypeName(@TypeOf(value.*))});
+            inline else => |data| {
+                if (@hasField(@TypeOf(data.*), "scope")) {
+                    return &data.scope;
+                }
+                return null;
             },
         }
     }
 
-    pub const Data = union(enum) {
-        def_decl: *DefDecl,
-        var_decl: *VarDecl,
-        fun_decl: *FunDecl,
-        fun_param: *FunParam,
-        type_decl: *TypeDecl,
-        enumerator: *Enumerator,
-        sub_type: *SubType,
-        case_binding: *CaseBinding,
-        struct_field: *StructField,
-        sum_type_reduce: *SumTypeReduce,
+    pub fn typeRef(s: Symbol) TypeRef {
+        return switch (s.data) {
+            .type => |t| t.id,
+            .enumerator => .unset,
+            inline else => |x| x.type,
+        };
+    }
 
-        pub fn fromSymbolLike(n: anytype) Data {
-            const field = comptime Symbol.fieldNameFromType(@TypeOf(n)).?;
+    pub const Data = union(enum) {
+        @"var": *Var,
+        fun: *Fun,
+        type: *Symbol.Type,
+        enumerator: *Symbol.Enumerator,
+        field: *Field,
+
+        pub fn fromAlt(n: anytype) Data {
+            const field = switch (@TypeOf(n)) {
+                *Var => "var",
+                *Fun => "fun",
+                *Symbol.Type => "type",
+                *Symbol.Enumerator => "enumerator",
+                *Field => "field",
+                else => @compileError("invalid type: " ++ @typeName(@TypeOf(n))),
+            };
             return @unionInit(Data, field, n);
         }
     };
 
-    pub const TypeCtx = union(enum) {
-        type_decl: *TypeDecl,
-        enum_type: *EnumType,
+    pub const Var = struct {
+        id: ir.Var = .nil,
+        type: TypeRef = .unset,
+        hint: ?Symbol = null,
+        kind: Kind,
+        flags: std.EnumSet(Var.Flag) = .empty,
+        pub const Flag = enum {
+            unpack,
+            is_const,
+        };
+        pub const Kind = enum {
+            @"var",
+            def,
+            param,
+            reduce,
+            case,
+        };
+        pub const dont_walk = true;
+    };
+
+    pub const Fun = struct {
+        unit: ir.FunUnit = .{},
+        type: TypeRef = .unset,
+        params: []Symbol = &.{},
+        scope: Scope = .{},
+        label_scope: LabelScope = .{},
+        pub const dont_walk = true;
+    };
+
+    pub const Type = struct {
+        id: TypeRef = .unset,
+        scope: Scope = .{},
+        underlying_type: ?Symbol = null,
+        is_resolving: bool = false,
+        pub const dont_walk = true;
+    };
+
+    pub const Enumerator = struct {
+        value: u64 = 0,
+        enclosed_by: Symbol = .{ .data = .{ .type = undefined } },
+        pub const dont_walk = true;
+    };
+
+    pub const Field = struct {
+        type: TypeRef = .unset,
+        enclosed_by: *Symbol.Type = undefined,
+        pub const dont_walk = true;
     };
 
     pub const dont_walk = true;
@@ -807,6 +1018,13 @@ pub const LabelScope = struct {
 };
 
 pub const Head = struct {
-    flags: std.EnumSet(Flag) = .initEmpty(),
+    flags: std.EnumSet(Flag) = .empty,
     position: Code.Offset = 0,
+
+    pub fn toFake(h: Head) Head {
+        return .{
+            .position = h.position,
+            .flags = h.flags.unionWith(.initOne(.fake)),
+        };
+    }
 };

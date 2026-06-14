@@ -64,7 +64,11 @@ pub const Store = struct {
                         },
                         .type_decl => |*td| .{
                             .name = td.name.text(),
-                            .type = store.internInfoStable(.init(.{ .user = td }, t)),
+                            .type = store.internInfoStable(.init(.{ .user = .{
+                                .name = td.name.text(),
+                                .source = td.head.position,
+                                .type = &td.symbol,
+                            } }, t)),
                         },
                         .dirty => unreachable,
                     };
@@ -174,14 +178,14 @@ pub const Store = struct {
             .ident => |id| {
                 const resolved = id.resolves_to.?;
                 switch (resolved.data) {
-                    .type_decl => |td| {
-                        if (td.type_ref == .unset) {
-                            // Make sure the type decl is full resolved
-                            td.type_ref = try store.internImpl(&td.type);
-                        }
-                        return store.internInfoStable(.init(.{ .user = td }, t));
+                    .type => |tp| {
+                        std.debug.assert(tp.id != .unset);
+                        return store.internInfoStable(.init(.{ .user = .{
+                            .name = resolved.name,
+                            .source = resolved.source,
+                            .type = tp,
+                        } }, t));
                     },
-                    .sub_type => |subt| return store.internImpl(&subt.type),
                     else => {},
                 }
                 unreachable;
@@ -189,8 +193,11 @@ pub const Store = struct {
             .selector => |sel| {
                 const resolved = sel.resolves_to.?;
                 switch (resolved.data) {
-                    .type_decl => |td| return store.internInfoStable(.init(.{ .user = td }, t)),
-                    .sub_type => |subt| return store.internImpl(&subt.type),
+                    .type => |tp| return store.internInfoStable(.init(.{ .user = .{
+                        .name = resolved.name,
+                        .source = resolved.source,
+                        .type = tp,
+                    } }, t)),
                     else => {},
                 }
                 unreachable;
@@ -251,8 +258,8 @@ pub const Store = struct {
     pub fn getBaseRef(store: *const Store, ref_: TypeRef) TypeRef {
         var ref = ref_;
         again: switch (store.get(ref).data) {
-            .user => |td| {
-                ref = td.type_ref;
+            .user => |tp| {
+                ref = tp.type.id;
                 continue :again store.get(ref).data;
             },
             .builtin => |prim| {
@@ -309,7 +316,9 @@ pub const Info = struct {
                 hasher.update(mem.asBytes(&fl));
             }
             switch (info.data) {
-                .user => |u| return @intFromPtr(u),
+                .user => |u| {
+                    hasher.update(mem.asBytes(&u.type.id));
+                },
                 .fun => |fun| {
                     hasher.update(mem.asBytes(&fun.signature.ref));
                     for (fun.bindings) |binding| {
@@ -377,7 +386,7 @@ pub const Info = struct {
                 return false;
             }
             switch (a) {
-                .user => |u| return u == b.user,
+                .user => |u| return u.type.id == b.user.type.id,
                 .fun_sig => |sig| {
                     if (sig.params.len != b.fun_sig.params.len) {
                         return false;
@@ -459,7 +468,7 @@ pub const Info = struct {
         }
         switch (info.data) {
             .user => |user| {
-                try writer.writeAll(user.name.text());
+                try writer.writeAll(user.name);
             },
             .fun => |fun| {
                 const sig = fun.signature.get(store.*);
@@ -511,7 +520,7 @@ pub const Info = struct {
                 });
             },
             .type_of => |child| {
-                try writer.print("type_of({f})", .{
+                try writer.print("{f}", .{
                     formatView(store, child),
                 });
             },
@@ -570,7 +579,7 @@ pub const Info = struct {
 };
 
 pub const Data = union(enum) {
-    user: *node.TypeDecl,
+    user: User,
     fun: Fun,
     fun_sig: Fun.Signature,
     ptr: TypeRef,
@@ -593,7 +602,9 @@ pub const Data = union(enum) {
 
     pub fn getUnderlyingType(d: Data, store: Store) Data {
         return again: switch (d) {
-            .user => |u| continue :again store.get(u.type_ref).data,
+            .user => |u| if (u.type.underlying_type) |und| {
+                continue :again store.get(und.typeRef()).data;
+            } else d,
             else => |x| x,
         };
     }
@@ -637,6 +648,12 @@ pub const Data = union(enum) {
             return null;
         }
     };
+};
+
+pub const User = struct {
+    name: []const u8,
+    source: usize,
+    type: *node.Symbol.Type,
 };
 
 pub const Fun = struct {

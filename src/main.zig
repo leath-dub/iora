@@ -105,28 +105,28 @@ pub fn main(init: std.process.Init) !void {
     var tc = TypeChecker.init(&ast, &code, &type_store);
     try invokeListener(&ast, &code, &tc);
 
-    var ib = IrBuilder.init(&ctx, &type_store);
-    defer ib.deinit();
-    Ast.walk(&ib, &ast.root.?);
-
-    var buf: [4096]u8 = undefined;
-    var stdout = std.Io.File.stdout().writer(ctx.io, &buf);
-
-    const FunUnitCleaner = struct {
-        ctx: *GeneralContext,
-        debug: *std.Io.Writer,
-
-        pub fn enterFunDecl(fuc: *@This(), fun_decl: *node.FunDecl) void {
-            (ir.FunUnitFormatter{ .ctx = fuc.ctx, .unit = fun_decl.unit }).format(fuc.debug) catch @panic("io error");
-            fun_decl.unit.deinit(fuc.ctx.allocator);
-        }
-    };
-
-    defer {
-        var fuc: FunUnitCleaner = .{ .ctx = &ctx, .debug = &stdout.interface };
-        Ast.walk(&fuc, &ast.root.?);
-        stdout.flush() catch unreachable;
-    }
+    // var ib = IrBuilder.init(&ctx, &type_store);
+    // defer ib.deinit();
+    // Ast.walk(&ib, &ast.root.?);
+    //
+    // var buf: [4096]u8 = undefined;
+    // var stdout = std.Io.File.stdout().writer(ctx.io, &buf);
+    //
+    // const FunUnitCleaner = struct {
+    //     ctx: *GeneralContext,
+    //     debug: *std.Io.Writer,
+    //
+    //     pub fn enterFunDecl(fuc: *@This(), fun_decl: *node.FunDecl) void {
+    //         (ir.FunUnitFormatter{ .ctx = fuc.ctx, .unit = fun_decl.xv(.unit) }).format(fuc.debug) catch @panic("io error");
+    //         fun_decl.x(.unit).deinit(fuc.ctx.allocator);
+    //     }
+    // };
+    //
+    // defer {
+    //     var fuc: FunUnitCleaner = .{ .ctx = &ctx, .debug = &stdout.interface };
+    //     Ast.walk(&fuc, &ast.root.?);
+    //     stdout.flush() catch unreachable;
+    // }
 
     // var cb = CBackend.init(&ctx, &type_store);
     // defer cb.deinit();

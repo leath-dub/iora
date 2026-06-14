@@ -44,8 +44,8 @@ pub fn exitSourceFile(lr: *LexicalScopeResolver, source_file: *node.SourceFile) 
 
 pub fn enterFunDecl(lr: *LexicalScopeResolver, fun_decl: *node.FunDecl) void {
     defer {
-        lr.push(&fun_decl.scope);
-        lr.pushLabelScope(&fun_decl.label_scope);
+        lr.push(fun_decl.x(.scope));
+        lr.pushLabelScope(fun_decl.x(.label_scope));
 
         // Forward insert all labels
         var label_resolver = LabelInserter{ .lr = lr };
@@ -60,7 +60,7 @@ pub fn enterFunDecl(lr: *LexicalScopeResolver, fun_decl: *node.FunDecl) void {
     if (fun_decl.type_name) |*type_name| {
         const result = common.resolve(lr.top(), type_name);
         const type_scope = if (result) |symbol| switch (symbol.data) {
-            .type_decl => |td| &td.scope,
+            .type => |t| &t.scope,
             else => {
                 lr.raise(
                     type_name.head.position,
@@ -80,24 +80,24 @@ pub fn enterFunDecl(lr: *LexicalScopeResolver, fun_decl: *node.FunDecl) void {
 
     // TODO: restrict non-local Foo__bar if Foo::bar exists
     // TODO: restrict name of non-local function to not include ' (e.g. func')
-    if (target_scope.insert(lr.ctx().allocator, node.Symbol.fromSymbolLike(fun_decl))) |existing| {
+    if (target_scope.insert(lr.ctx().allocator, node.Symbol.fromNode(fun_decl))) |existing| {
         lr.raise(
             fun_decl.name.head.position,
             "{s} redeclared in this block; other declaration at {f}",
             .{
                 fun_decl.name.text(),
-                lr.code.target(existing.head().position),
+                lr.code.target(existing.source),
             },
         );
     }
 }
 
 pub fn enterFunType(lr: *LexicalScopeResolver, fun_type: *node.FunType) void {
-    lr.push(&fun_type.scope);
+    lr.push(fun_type.x(.scope));
 }
 
 pub fn exitFunType(lr: *LexicalScopeResolver, fun_type: *node.FunType) void {
-    lr.pop(&fun_type.scope);
+    lr.pop(fun_type.x(.scope));
 }
 
 const LabelInserter = struct {
@@ -118,7 +118,7 @@ pub fn enterDefDecl(lr: *LexicalScopeResolver, def_decl: *node.DefDecl) void {
     if (def_decl.type_name) |*type_name| {
         const result = common.resolve(lr.top(), type_name);
         const type_scope = if (result) |symbol| switch (symbol.data) {
-            .type_decl => |td| &td.scope,
+            .type => |t| &t.scope,
             else => {
                 lr.raise(
                     type_name.head.position,
@@ -141,33 +141,34 @@ pub fn enterDefDecl(lr: *LexicalScopeResolver, def_decl: *node.DefDecl) void {
         return;
     }
 
-    if (target_scope.insert(lr.ctx().allocator, node.Symbol.fromSymbolLike(def_decl))) |existing| {
+    if (target_scope.insert(lr.ctx().allocator, node.Symbol.fromNode(def_decl))) |existing| {
         lr.raise(
             def_decl.name.head.position,
             "{s} redeclared in this block; other declaration at {f}",
             .{
                 def_decl.name.text(),
-                lr.code.target(existing.head().position),
+                lr.code.target(existing.source),
             },
         );
     }
 }
 
 pub fn exitFunDecl(lr: *LexicalScopeResolver, fun_decl: *node.FunDecl) void {
-    lr.pop(&fun_decl.scope);
-    lr.popLabelScope(&fun_decl.label_scope);
+    lr.pop(fun_decl.x(.scope));
+    lr.popLabelScope(fun_decl.x(.label_scope));
 }
 
 pub fn enterSumType(lr: *LexicalScopeResolver, sum_type: *node.SumType) void {
-    lr.push(&sum_type.scope);
+    sum_type.symbol = .{};
+    lr.push(sum_type.x(.scope));
 }
 
 pub fn exitSumType(lr: *LexicalScopeResolver, sum_type: *node.SumType) void {
-    lr.pop(&sum_type.scope);
+    lr.pop(sum_type.x(.scope));
 }
 
 pub fn enterTupleType(lr: *LexicalScopeResolver, tuple_type: *node.TupleType) void {
-    lr.push(&tuple_type.scope);
+    lr.push(tuple_type.x(.scope));
 }
 
 pub fn exitTupleType(lr: *LexicalScopeResolver, tuple_type: *node.TupleType) void {
@@ -176,19 +177,19 @@ pub fn exitTupleType(lr: *LexicalScopeResolver, tuple_type: *node.TupleType) voi
         for (tuple_type.types, 0..) |*ty, index| {
             std.debug.assert(scope.insert(lr.ctx().allocator, .{
                 .name = lr.ast.num(index),
-                .data = node.Symbol.Data.fromSymbolLike(ty),
+                .data = node.Symbol.Data.fromAlt(&ty.symbol),
             }) == null);
         }
     }
-    lr.pop(&tuple_type.scope);
+    lr.pop(tuple_type.x(.scope));
 }
 
 pub fn enterStructType(lr: *LexicalScopeResolver, struct_type: *node.StructType) void {
-    lr.push(&struct_type.scope);
+    lr.push(struct_type.x(.scope));
 }
 
 pub fn exitStructType(lr: *LexicalScopeResolver, struct_type: *node.StructType) void {
-    lr.pop(&struct_type.scope);
+    lr.pop(struct_type.x(.scope));
 }
 
 pub fn enterCompStmt(lr: *LexicalScopeResolver, comp_stmt: *node.CompStmt) void {
@@ -200,13 +201,13 @@ pub fn exitCompStmt(lr: *LexicalScopeResolver, comp_stmt: *node.CompStmt) void {
 }
 
 pub fn enterEnumType(lr: *LexicalScopeResolver, enum_type: *node.EnumType) Ast.ChildDisposition {
-    lr.push(&enum_type.scope);
+    lr.push(enum_type.x(.scope));
     if (!lr.in_global_type) {
         for (enum_type.alts) |*alt| {
+            alt.symbol.enclosed_by = .fromNode(enum_type);
             lr.insert(node.Symbol{
                 .name = alt.name.text(),
-                .data = node.Symbol.Data.fromSymbolLike(alt),
-                .type_ctx = .{ .enum_type = enum_type },
+                .data = .fromAlt(&alt.symbol),
             });
         }
     }
@@ -214,7 +215,7 @@ pub fn enterEnumType(lr: *LexicalScopeResolver, enum_type: *node.EnumType) Ast.C
 }
 
 pub fn exitEnumType(lr: *LexicalScopeResolver, enum_type: *node.EnumType) void {
-    lr.pop(&enum_type.scope);
+    lr.pop(enum_type.x(.scope));
 }
 
 pub fn enterTypeDecl(lr: *LexicalScopeResolver, type_decl: *node.TypeDecl) void {
@@ -227,19 +228,19 @@ pub fn enterTypeDecl(lr: *LexicalScopeResolver, type_decl: *node.TypeDecl) void 
     if (!lr.in_global_type) {
         lr.insert(type_decl);
     }
-    lr.push(&type_decl.scope);
+    lr.push(type_decl.x(.scope));
 }
 
 pub fn exitTypeDecl(lr: *LexicalScopeResolver, type_decl: *node.TypeDecl) void {
-    lr.pop(&type_decl.scope);
+    lr.pop(type_decl.x(.scope));
     if (!lr.in_global_type) {
         // Amend type context when we realise that the enum was a child of
         // a distinct type
         if (type_decl.type == .@"enum") {
-            const en = type_decl.type.@"enum";
-            var it = en.scope.entries.iterator();
+            const en = &type_decl.type.@"enum";
+            var it = en.x(.scope).entries.iterator();
             while (it.next()) |ent| {
-                ent.value_ptr.type_ctx = .{ .type_decl = type_decl };
+                ent.value_ptr.data.enumerator.enclosed_by = .fromNode(type_decl);
             }
         }
     }
@@ -268,7 +269,7 @@ pub fn enterIdentType(lr: *LexicalScopeResolver, ident_type: *node.IdentType) vo
 
     ident_type.resolves_to = common.resolve(lr.top(), name);
     if (ident_type.resolves_to) |symbol| {
-        if (symbol.data != .type_decl) {
+        if (symbol.data != .type) {
             lr.raise(position, "expected {s} to be a type", .{name.text()});
         }
     } else {
@@ -314,7 +315,7 @@ pub fn exitSelectorExpr(lr: *LexicalScopeResolver, selector_expr: *node.Selector
     };
     const field = &selector_expr.field;
     if (res) |symbol| {
-        if (symbol.data == .var_decl) {
+        if (symbol.data == .@"var") {
             // This cannot be resolved at this point as we do not have the
             // types resolved for variable declarations. Resolution like this
             // needs to be done along with type checking in TypeChecker.zig
@@ -378,15 +379,15 @@ fn insert(lr: *LexicalScopeResolver, symbol_: anytype) void {
     const position = if (@TypeOf(symbol_) != node.Symbol)
         symbol_.name.head.position
     else
-        symbol_.head().position;
-    const symbol = if (@TypeOf(symbol_) != node.Symbol) node.Symbol.fromSymbolLike(symbol_) else symbol_;
+        symbol_.source;
+    const symbol = if (@TypeOf(symbol_) != node.Symbol) node.Symbol.fromNode(symbol_) else symbol_;
     if (lr.top().insert(lr.ctx().allocator, symbol)) |existing| {
         lr.raise(
             position,
             "{s} redeclared in this block; other declaration at {f}",
             .{
                 symbol.name,
-                lr.code.target(existing.head().position),
+                lr.code.target(existing.source),
             },
         );
     }

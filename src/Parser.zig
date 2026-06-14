@@ -154,7 +154,7 @@ fn createBranchStmt(p: *Parser) node.BranchStmt {
 fn parseLabelledStmt(p: *Parser) node.LabelledStmt {
     var stmt = p.create(node.LabelledStmt);
     stmt.name = p.parseIdent();
-    if (!p.skipIf(.colon)) return err(stmt);
+    if (!p.skipIf(.equal)) return err(stmt);
     stmt.stmt = p.ast.box(p.parseStmt());
     return ok(stmt);
 }
@@ -945,7 +945,7 @@ fn onLabel(p: *Parser) bool {
     const first = p.munch();
     const on_label = (first.type == .ident or
         first.type == .int_lit) and
-        p.munch().type == .colon;
+        p.munch().type == .equal;
     p.lexer = marker;
     return on_label;
 }
@@ -953,7 +953,7 @@ fn onLabel(p: *Parser) bool {
 fn parseLabelledExpr(p: *Parser) node.LabelledExpr {
     var labelled_expr = p.create(node.LabelledExpr);
     labelled_expr.label = p.parseIdentOrInt();
-    if (!p.skipIf(.colon)) return err(labelled_expr);
+    if (!p.skipIf(.equal)) return err(labelled_expr);
     labelled_expr.expr = p.parseExpr();
     if (p.on(.ddot)) {
         _ = p.next();

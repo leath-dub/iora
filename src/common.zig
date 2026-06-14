@@ -51,37 +51,25 @@ pub fn todo(cond: bool, comptime fmt: []const u8, args: anytype) void {
 }
 
 pub fn resolveTypeSelector(symbol: node.Symbol, field: *const node.Ident, out: *?node.Symbol) void {
-    if (symbol.data != .type_decl) {
-        return;
-    }
-
     var final: ?node.Symbol = symbol;
     defer out.* = final;
 
-    again: switch (final.?.data) {
-        .type_decl => |td| {
-            // First try the type scope
-            final = resolveLocal(&td.scope, field);
-
-            // Next try local sub-scope
-            if (final == null) {
-                const fallback_scope = switch (td.type) {
-                    .tuple => |*tup| &tup.scope,
-                    .sum => |*sum| &sum.scope,
-                    .@"enum" => |*en| &en.scope,
-                    .selector => |*sel| blk: {
-                        if (sel.resolves_to) |ss| {
-                            continue :again ss.data;
-                        }
-                        break :blk null;
-                    },
-                    else => null,
-                };
-                if (fallback_scope) |fs| {
-                    final = resolveLocal(fs, field);
+    if (final) |s| {
+        switch (s.data) {
+            .type => |t| {
+                var type_opt: ?*node.Symbol.Type = t;
+                while (type_opt) |tp| {
+                    final = resolveLocal(&tp.scope, field);
+                    if (final != null) {
+                        break;
+                    }
+                    if (t.underlying_type != null) {
+                        break;
+                    }
+                    type_opt = t.underlying_type.?.data.type;
                 }
-            }
-        },
-        else => {},
+            },
+            else => {},
+        }
     }
 }

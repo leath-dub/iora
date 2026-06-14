@@ -2,7 +2,6 @@
 //! "Simple and Efficient Construction of Static Single Assignment Form":
 //!     https://c9x.me/compile/bib/braun13cc.pdf
 
-
 // TODO: add on the fly optimizations
 
 const std = @import("std");
@@ -28,22 +27,22 @@ pub fn enterFunDecl(ib: *IrBuilder, fun_decl: *node.FunDecl) void {
         return;
     }
 
-    ib.beginUnit(&fun_decl.unit);
+    ib.beginUnit(fun_decl.x(.unit));
 }
 
 pub fn enterFunParam(ib: *IrBuilder, fun_param: *node.FunParam) void {
-    common.todo(fun_param.type_ref == .u64, "only u64 types currently supported", .{});
+    common.todo(fun_param.xv(.type) == .u64, "only u64 types currently supported", .{});
     const unit = ib.currentUnit();
     const user = unit.blockPtr(unit.current).assign(
         ib.ctx.allocator,
         allocParam(unit, fun_param),
-        unit.allocRegister(ib.ins(1, .let, .{ .{ .value = .{ .u64 = 0 } } })),
+        unit.allocRegister(ib.ins(1, .let, .{.{ .value = .{ .u64 = 0 } }})),
     );
     unit.registerUsers(ib.ctx.allocator, unit.current, user);
 }
 
 pub fn exitVarDecl(ib: *IrBuilder, var_decl: *node.VarDecl) void {
-    common.todo(var_decl.type_ref == .u64, "only u64 types currently supported", .{});
+    common.todo(var_decl.xv(.type) == .u64, "only u64 types currently supported", .{});
     const unit = ib.currentUnit();
     var value: ir.Operand = .{ .value = .{ .u64 = 0 } };
     if (var_decl.init_expr) |ex| {
@@ -52,7 +51,7 @@ pub fn exitVarDecl(ib: *IrBuilder, var_decl: *node.VarDecl) void {
     const user = unit.blockPtr(unit.current).assign(
         ib.ctx.allocator,
         allocVar(unit, var_decl),
-        unit.allocRegister(ib.ins(1, .let, .{ value })),
+        unit.allocRegister(ib.ins(1, .let, .{value})),
     );
     unit.registerUsers(ib.ctx.allocator, unit.current, user);
     if (value == .register) {
@@ -71,9 +70,7 @@ pub fn enterIfStmt(ib: *IrBuilder, if_stmt: *node.IfStmt) Ast.ChildDisposition {
 
         Ast.walk(ib, &if_stmt.cond.expr);
         const cond = if_stmt.cond.expr.register().*;
-        _ = unit.blockPtr(entry_block).add(
-            ib.ctx.allocator, 
-            ib.ins(3, .br, .{ .{ .register = cond }, .{ .block = then_block }, .{ .block = else_block } }));
+        _ = unit.blockPtr(entry_block).add(ib.ctx.allocator, ib.ins(3, .br, .{ .{ .register = cond }, .{ .block = then_block }, .{ .block = else_block } }));
         unit.registerUsers(ib.ctx.allocator, entry_block, unit.blockPtr(entry_block).lastInstruction());
 
         unit.blockPtr(entry_block).addSuccessor(ib.ctx.allocator, then_block);
@@ -106,9 +103,7 @@ pub fn enterIfStmt(ib: *IrBuilder, if_stmt: *node.IfStmt) Ast.ChildDisposition {
 
         Ast.walk(ib, &if_stmt.cond.expr);
         const cond = if_stmt.cond.expr.register().*;
-        _ = unit.blockPtr(entry_block).add(
-            ib.ctx.allocator, 
-            ib.ins(3, .br, .{ .{ .register = cond }, .{ .block = then_block }, .{ .block = join_block } }));
+        _ = unit.blockPtr(entry_block).add(ib.ctx.allocator, ib.ins(3, .br, .{ .{ .register = cond }, .{ .block = then_block }, .{ .block = join_block } }));
         unit.registerUsers(ib.ctx.allocator, entry_block, unit.blockPtr(entry_block).lastInstruction());
 
         unit.blockPtr(entry_block).addSuccessor(ib.ctx.allocator, then_block);
@@ -121,7 +116,6 @@ pub fn enterIfStmt(ib: *IrBuilder, if_stmt: *node.IfStmt) Ast.ChildDisposition {
         const then_exit_block = unit.current;
         unit.blockPtr(then_exit_block).addSuccessor(ib.ctx.allocator, join_block);
         unit.blockPtr(join_block).addPredecessor(ib.ctx.allocator, then_exit_block);
-
 
         unit.blockPtr(entry_block).addSuccessor(ib.ctx.allocator, join_block);
         unit.blockPtr(join_block).addPredecessor(ib.ctx.allocator, entry_block);
@@ -154,7 +148,7 @@ pub fn exitTokenExpr(ib: *IrBuilder, token_expr: *node.TokenExpr) void {
             const unit = ib.currentUnit();
             token_expr.register = unit.blockPtr(unit.current).add(
                 ib.ctx.allocator,
-                unit.allocRegister(ib.ins(1, .let, .{ .{ .value = .{ .u64 = lit.value } } })),
+                unit.allocRegister(ib.ins(1, .let, .{.{ .value = .{ .u64 = lit.value } }})),
             );
         },
         else => unreachable,
@@ -195,13 +189,13 @@ pub fn exitBinExpr(ib: *IrBuilder, bin_expr: *node.BinExpr) void {
 
 pub fn exitAssign(ib: *IrBuilder, assign: *node.Assign) void {
     common.todo(assign.lvalue == .ident_expr, "currently assignment to plain ident is only supported", .{});
-    const id = symId(assign.lvalue.ident_expr.resolves_to.?);
+    const id = assign.lvalue.ident_expr.resolves_to.?.varId().?;
     const unit = ib.currentUnit();
     const user = unit.blockPtr(unit.current).assign(
         ib.ctx.allocator,
         id,
         unit.allocRegister(
-            ib.ins(1, .let, .{ .{ .register = assign.rvalue.registerConst().* } }),
+            ib.ins(1, .let, .{.{ .register = assign.rvalue.registerConst().* }}),
         ),
     );
     unit.registerUsers(ib.ctx.allocator, unit.current, user);
@@ -211,11 +205,11 @@ pub fn exitAssign(ib: *IrBuilder, assign: *node.Assign) void {
 // by Braun et al.
 pub fn exitIdentExpr(ib: *IrBuilder, ident_expr: *node.IdentExpr) void {
     common.todo(!ident_expr.is_inferred, "inferred names not supported yet", .{});
-    ident_expr.register = ib.readVar(ib.currentUnit().current, symId(ident_expr.resolves_to.?));
+    ident_expr.register = ib.readVar(ib.currentUnit().current, ident_expr.resolves_to.?.varId().?);
 }
 
 pub fn exitFunDecl(ib: *IrBuilder, fun_decl: *node.FunDecl) void {
-    ib.endUnit(&fun_decl.unit);
+    ib.endUnit(fun_decl.x(.unit));
 }
 
 pub fn init(ctx: *GeneralContext, type_store: *ty.Store) IrBuilder {
@@ -234,18 +228,6 @@ pub fn deinit(ib: *IrBuilder) void {
 
 fn currentUnit(ib: *IrBuilder) *ir.FunUnit {
     return ib.fun_units.top().?;
-}
-
-fn symId(sym: node.Symbol) ir.Var {
-    switch (sym.data) {
-        .var_decl => |vd| {
-            return vd.id;
-        },
-        .fun_param => |fp| {
-            return fp.id;
-        },
-        else => |x| common.todoNoReturn("symbol id: {any}", .{x}),
-    }
 }
 
 fn readVar(ib: *IrBuilder, blk_ref: ir.BlockRef, id: ir.Var) ir.Register {
@@ -377,18 +359,18 @@ fn ins(ib: *IrBuilder, comptime arg_count: usize, op: ir.Operation, args: [arg_c
 }
 
 fn allocVar(unit: *ir.FunUnit, var_decl: *node.VarDecl) ir.Var {
-    var_decl.id = unit.allocVar();
-    return var_decl.id;
+    var_decl.x(.id).* = unit.allocVar();
+    return var_decl.xv(.id);
 }
 
 fn allocDef(unit: *ir.FunUnit, def_decl: *node.DefDecl) ir.Var {
-    def_decl.id = unit.allocVar();
-    return def_decl.id;
+    def_decl.x(.id).* = unit.allocVar();
+    return def_decl.xv(.id);
 }
 
 fn allocParam(unit: *ir.FunUnit, fun_param: *node.FunParam) ir.Var {
-    fun_param.id = unit.allocVar();
-    return fun_param.id;
+    fun_param.x(.id).* = unit.allocVar();
+    return fun_param.xv(.id);
 }
 
 fn allocBlock(ib: *IrBuilder) ir.BlockRef {
