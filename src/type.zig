@@ -259,8 +259,9 @@ pub const Store = struct {
         var ref = ref_;
         again: switch (store.get(ref).data) {
             .user => |tp| {
-                ref = tp.type.id;
-                continue :again store.get(ref).data;
+                if (tp.type.underlying_type) |underlying_type| {
+                    continue :again store.get(underlying_type.typeRef()).data;
+                }
             },
             .builtin => |prim| {
                 ref = prim;
@@ -317,7 +318,9 @@ pub const Info = struct {
             }
             switch (info.data) {
                 .user => |u| {
-                    hasher.update(mem.asBytes(&u.type.id));
+                    hasher.update(u.name);
+                    hasher.update(mem.asBytes(&u.source));
+                    hasher.update(mem.asBytes(&@as(usize, @intFromPtr(u.type))));
                 },
                 .fun => |fun| {
                     hasher.update(mem.asBytes(&fun.signature.ref));
@@ -520,7 +523,7 @@ pub const Info = struct {
                 });
             },
             .type_of => |child| {
-                try writer.print("{f}", .{
+                try writer.print("type({f})", .{
                     formatView(store, child),
                 });
             },

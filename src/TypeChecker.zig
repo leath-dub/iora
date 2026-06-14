@@ -61,8 +61,7 @@ pub fn enterFunDecl(tc: *TypeChecker, fun_decl: *node.FunDecl) void {
     const any_type: node.Type = .{ .fun = fun_type };
     fun_decl.symbol.type = tc.type_store.intern(&any_type);
 
-    tc.symbol_of_type.put(tc.ctx().allocator, fun_decl.symbol.type, .fromNode(fun_decl))
-        catch @panic("OOM");
+    tc.symbol_of_type.put(tc.ctx().allocator, fun_decl.symbol.type, .fromNode(fun_decl)) catch @panic("OOM");
 }
 
 pub fn exitFunDecl(tc: *TypeChecker, fun_decl: *node.FunDecl) void {
@@ -101,8 +100,7 @@ pub fn exitFunParam(tc: *TypeChecker, param: *node.FunParam) void {
 
 pub fn exitFunType(tc: *TypeChecker, fun_type: *node.FunType) void {
     const tp: *node.Type = @fieldParentPtr("fun", fun_type);
-    tc.symbol_of_type.put(tc.ctx().allocator, tc.type_store.intern(tp), .fromNode(fun_type))
-        catch @panic("OOM");
+    tc.symbol_of_type.put(tc.ctx().allocator, tc.type_store.intern(tp), .fromNode(fun_type)) catch @panic("OOM");
 }
 
 pub fn enterCompStmt(tc: *TypeChecker, comp_stmt: *node.CompStmt) void {
@@ -114,7 +112,16 @@ pub fn exitCompStmt(tc: *TypeChecker, comp_stmt: *node.CompStmt) void {
 }
 
 pub fn exitTypeDecl(tc: *TypeChecker, type_decl: *node.TypeDecl) void {
-    type_decl.x(.id).* = tc.type_store.intern(&type_decl.type);
+    type_decl.x(.id).* = tc.type_store.internInfoStable(.{
+        .data = .{
+            .user = .{
+                .name = type_decl.name.text(),
+                .source = type_decl.head.position,
+                .type = &type_decl.symbol,
+            },
+        },
+    });
+    std.debug.assert(type_decl.symbol.underlying_type != null);
 }
 
 pub fn exitStructField(tc: *TypeChecker, struct_field: *node.StructField) void {
@@ -124,6 +131,7 @@ pub fn exitStructField(tc: *TypeChecker, struct_field: *node.StructField) void {
 pub fn enterVarDecl(tc: *TypeChecker, var_decl: *node.VarDecl) void {
     if (var_decl.type) |*t| {
         var_decl.x(.type).* = tc.type_store.intern(t);
+        var_decl.x(.hint).* = t.symbol();
     }
     if (var_decl.init_expr) |*init_expr| {
         if (var_decl.type) |*tp| {
@@ -679,7 +687,9 @@ fn bindCall(tc: *TypeChecker, callable_t: TypeRef, call: anytype) TypeRef {
         });
         return .dirty;
     }
-    const fun_symbol = fun_symbol_opt.?.data.fun;
+
+    const main_fun_symbol = fun_symbol_opt.?.data.fun;
+    var fun_symbol = fun_symbol_opt.?.data.fun;
 
     const bindings = tc.argBindingsOfFun(fun_symbol);
     const main_binder: ArgBinder = .init(bindings);
@@ -703,6 +713,7 @@ fn bindCall(tc: *TypeChecker, callable_t: TypeRef, call: anytype) TypeRef {
 
                     state = .top_level;
                     binder = main_binder;
+                    fun_symbol = main_fun_symbol;
 
                     const unpack_call: node.AnonCallExpr = .{
                         .head = .{ .position = call.args[first].at(), .flags = .initOne(.fake) },
@@ -713,8 +724,13 @@ fn bindCall(tc: *TypeChecker, callable_t: TypeRef, call: anytype) TypeRef {
 
                     const expr = tc.ast.box(node.Expr{ .anon_call = unpack_call });
                     const info = binder.bindNext(expr);
-                    tc.handleBind(expr, unpack_bindings, info);
-
+                    tc.handleBind(expr, binder.bindings, info);
+                    if (info == .bound) {
+                        const param = fun_symbol.params[info.bound].data.@"var";
+                        if (param.hint) |hint| {
+                            tc.hintType(hint, expr);
+                        }
+                    }
                     continue :again arg.*;
                 }
                 const info = binder.bindNext(&unpack.expr);
@@ -725,8 +741,11 @@ fn bindCall(tc: *TypeChecker, callable_t: TypeRef, call: anytype) TypeRef {
                         tc.raise(
                             unpack.head.position,
                             "cannot specify '..'; parameter {s} is not a pack",
-                            .{ binder.bindings[info.bound].name },
+                            .{binder.bindings[info.bound].name},
                         );
+                    }
+                    if (param.hint) |hint| {
+                        tc.hintType(hint, &unpack.expr);
                     }
                 }
             },
@@ -735,43 +754,59 @@ fn bindCall(tc: *TypeChecker, callable_t: TypeRef, call: anytype) TypeRef {
                     if (next.data.@"var".flags.contains(.unpack)) {
                         const unpack_callable = if (next.data.type.underlying_type) |underlying_type|
                             underlying_type.data.type.id
-                        else next.data.type.id;
+                        else
+                            next.data.type.id;
                         if (tc.getCallableSymbol(unpack_callable)) |unpack_symbol| {
                             state = .{ .unpack = i };
                             const unpack_fun = unpack_symbol.data.fun;
                             const unpack_bindings = tc.argBindingsOfFun(unpack_fun);
                             binder = .init(unpack_bindings);
+                            fun_symbol = unpack_fun;
                             // Continue with the same argument, just different
                             // state
                             continue :again arg.*;
                         } // no need to error as if the pack param is not
-                          // callable it will be an error at declaration
+                        // callable it will be an error at declaration
                     }
                 }
                 const label = labelled.label.text();
                 const info = binder.bind(label, &labelled.expr);
                 tc.handleBind(&labelled.expr, binder.bindings, info);
+                if (info == .bound) {
+                    const param = fun_symbol.params[info.bound].data.@"var";
+                    if (param.hint) |hint| {
+                        tc.hintType(hint, &labelled.expr);
+                    }
+                }
             },
             .expr => |*expr| {
                 if (binder.nextParam(fun_symbol.params)) |next| {
                     if (next.data.@"var".flags.contains(.unpack)) {
                         const unpack_callable = if (next.data.type.underlying_type) |underlying_type|
                             underlying_type.data.type.id
-                        else next.data.type.id;
+                        else
+                            next.data.type.id;
                         if (tc.getCallableSymbol(unpack_callable)) |unpack_symbol| {
                             state = .{ .unpack = i };
                             const unpack_fun = unpack_symbol.data.fun;
                             const unpack_bindings = tc.argBindingsOfFun(unpack_fun);
                             binder = .init(unpack_bindings);
+                            fun_symbol = unpack_fun;
                             // Continue with the same argument, just different
                             // state
                             continue :again arg.*;
                         } // no need to error as if the pack param is not
-                          // callable it will be an error at declaration
+                        // callable it will be an error at declaration
                     }
                 }
                 const info = binder.bindNext(expr);
                 tc.handleBind(expr, binder.bindings, info);
+                if (info == .bound) {
+                    const param = fun_symbol.params[info.bound].data.@"var";
+                    if (param.hint) |hint| {
+                        tc.hintType(hint, expr);
+                    }
+                }
             },
             .dirty => {},
         }
@@ -782,6 +817,7 @@ fn bindCall(tc: *TypeChecker, callable_t: TypeRef, call: anytype) TypeRef {
 
             state = .top_level;
             binder = main_binder;
+            fun_symbol = main_fun_symbol;
 
             const unpack_call: node.AnonCallExpr = .{
                 .head = .{ .position = call.args[first].at(), .flags = .initOne(.fake) },
@@ -792,7 +828,13 @@ fn bindCall(tc: *TypeChecker, callable_t: TypeRef, call: anytype) TypeRef {
 
             const expr = tc.ast.box(node.Expr{ .anon_call = unpack_call });
             const info = binder.bindNext(expr);
-            tc.handleBind(expr, unpack_bindings, info);
+            tc.handleBind(expr, binder.bindings, info);
+            if (info == .bound) {
+                const param = fun_symbol.params[info.bound].data.@"var";
+                if (param.hint) |hint| {
+                    tc.hintType(hint, expr);
+                }
+            }
         }
     }
 
@@ -803,6 +845,7 @@ fn bindCall(tc: *TypeChecker, callable_t: TypeRef, call: anytype) TypeRef {
 
         state = .top_level;
         binder = main_binder;
+        fun_symbol = main_fun_symbol;
 
         const unpack_call: node.AnonCallExpr = .{
             .head = .{ .position = call.args[first].at(), .flags = .initOne(.fake) },
@@ -813,7 +856,13 @@ fn bindCall(tc: *TypeChecker, callable_t: TypeRef, call: anytype) TypeRef {
 
         const expr = tc.ast.box(node.Expr{ .anon_call = unpack_call });
         const info = binder.bindNext(expr);
-        tc.handleBind(expr, unpack_bindings, info);
+        tc.handleBind(expr, binder.bindings, info);
+        if (info == .bound) {
+            const param = fun_symbol.params[info.bound].data.@"var";
+            if (param.hint) |hint| {
+                tc.hintType(hint, expr);
+            }
+        }
     }
 
     call.call_bindings = .{ .bindings = binder.bindings };
@@ -821,10 +870,9 @@ fn bindCall(tc: *TypeChecker, callable_t: TypeRef, call: anytype) TypeRef {
     return tc.type_store.get(fun_symbol.type).data.fun.signature.get(tc.type_store.*).return_type;
 }
 
-fn argBindingsOfFun(tc: *TypeChecker, fun: *node.Symbol.Fun)  []node.CallBindings.ArgBinding {
+fn argBindingsOfFun(tc: *TypeChecker, fun: *node.Symbol.Fun) []node.CallBindings.ArgBinding {
     const al = tc.ast.arena.allocator();
-    const args = al.alloc(node.CallBindings.ArgBinding, fun.params.len)
-        catch @panic("OOM");
+    const args = al.alloc(node.CallBindings.ArgBinding, fun.params.len) catch @panic("OOM");
     for (fun.params, 0..) |symbol, i| {
         args[i] = .{
             .name = symbol.name,
@@ -836,8 +884,7 @@ fn argBindingsOfFun(tc: *TypeChecker, fun: *node.Symbol.Fun)  []node.CallBinding
 
 fn argBindingsOfSize(tc: *TypeChecker, len: usize) []node.CallBindings.ArgBinding {
     const al = tc.ast.arena.allocator();
-    const args = al.alloc(node.CallBindings.ArgBinding, len)
-        catch @panic("OOM");
+    const args = al.alloc(node.CallBindings.ArgBinding, len) catch @panic("OOM");
     for (0..len) |i| {
         args[i] = .{
             .name = tc.ast.num(i),
@@ -856,8 +903,7 @@ fn getCallableTarget(tc: *TypeChecker, callable_t: TypeRef) ?TypeRef {
             switch (lit_type_info.data) {
                 .user => |*user| {
                     if (user.type.underlying_type) |underlying_type| {
-                        return
-                            underlying_type.data.type.id;
+                        return underlying_type.data.type.id;
                     }
                 },
                 else => {},
@@ -890,12 +936,12 @@ fn handleBind(tc: *TypeChecker, ex: *node.Expr, bindings: []node.CallBindings.Ar
             tc.raise(
                 ex.at(),
                 "cannot specify argument {s} more than once",
-                .{ bindings[at].name },
+                .{bindings[at].name},
             );
             tc.raise(
                 bindings[at].expr.?.at(),
                 "note: argument {s} first bound here",
-                .{ bindings[at].name },
+                .{bindings[at].name},
             );
         },
     }
@@ -961,7 +1007,7 @@ const ArgBinder = struct {
         bound: usize,
         not_bound,
     };
-}; 
+};
 
 // const CallArgBinder = struct {
 //     tc: *TypeChecker,
@@ -1546,6 +1592,8 @@ pub fn exitAnonCallExpr(tc: *TypeChecker, anon_call: *node.AnonCallExpr) void {
 }
 
 pub fn exitType(tc: *TypeChecker, t: *node.Type) void {
+    t.symbol().data.type.id = tc.type_store.intern(t);
+
     if (t.isWeak() and !t.isLinear()) {
         tc.raise(t.at(), "cannot specify non-linear type as 'weak'", .{});
     }
@@ -1559,8 +1607,7 @@ pub fn exitTupleType(tc: *TypeChecker, tuple_type: *node.TupleType) void {
     };
 
     const scope = tuple_type.callable.x(.scope);
-    var params = tc.ast.arena.allocator().alloc(node.FunParam, tuple_type.types.len)
-        catch @panic("OOM");
+    var params = tc.ast.arena.allocator().alloc(node.FunParam, tuple_type.types.len) catch @panic("OOM");
 
     for (tuple_type.types, 0..) |*tp, i| {
         params[i] = .{
@@ -1589,8 +1636,7 @@ pub fn exitStructType(tc: *TypeChecker, struct_type: *node.StructType) void {
     };
 
     const scope = struct_type.callable.x(.scope);
-    var params = tc.ast.arena.allocator().alloc(node.FunParam, struct_type.fields.len)
-        catch @panic("OOM");
+    var params = tc.ast.arena.allocator().alloc(node.FunParam, struct_type.fields.len) catch @panic("OOM");
 
     for (struct_type.fields, 0..) |*f, i| {
         params[i] = .{

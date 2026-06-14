@@ -66,6 +66,7 @@ pub fn enterDecl(mr: *ModuleScopeResolver, decl: *node.Decl) Ast.ChildDispositio
                 },
                 .type => |*type_decl| {
                     mr.insert(type_decl);
+                    type_decl.x(.underlying_type).* = type_decl.type.symbol();
                 },
                 .fun => |*fun_decl| {
                     if (fun_decl.type_name == null) {

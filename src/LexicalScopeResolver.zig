@@ -227,6 +227,7 @@ pub fn enterTypeDecl(lr: *LexicalScopeResolver, type_decl: *node.TypeDecl) void 
     }
     if (!lr.in_global_type) {
         lr.insert(type_decl);
+        type_decl.x(.underlying_type).* = type_decl.type.symbol();
     }
     lr.push(type_decl.x(.scope));
 }

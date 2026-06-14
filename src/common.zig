@@ -63,7 +63,7 @@ pub fn resolveTypeSelector(symbol: node.Symbol, field: *const node.Ident, out: *
                     if (final != null) {
                         break;
                     }
-                    if (t.underlying_type != null) {
+                    if (t.underlying_type == null) {
                         break;
                     }
                     type_opt = t.underlying_type.?.data.type;
