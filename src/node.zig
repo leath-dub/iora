@@ -30,6 +30,7 @@ pub const Decl = union(enum) {
     dirty,
 };
 
+// TODO: allow 'use core as c;'
 pub const Import = struct {
     head: Head = .{},
     module: Token = .{},
@@ -103,6 +104,7 @@ pub const FunParam = struct {
     head: Head = .{},
     name: Ident = .{},
     type: Type = .dirty,
+    default: ?Expr = null,
     unpack: bool = false,
     symbol: Symbol.Var = .{ .kind = .param },
 

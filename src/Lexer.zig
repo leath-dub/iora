@@ -120,7 +120,7 @@ const token_descriptors = [_]TokenDescriptor{
     TokenDescriptor.initKeyword(.false),
     TokenDescriptor.initKeyword(.@"extern"),
     TokenDescriptor.initKeyword(.intern),
-    TokenDescriptor.initKeyword(.import),
+    TokenDescriptor.initKeyword(.use),
     TokenDescriptor.initKeyword(.weak),
     TokenDescriptor.initKeyword(.linear),
 };

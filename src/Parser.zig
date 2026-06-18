@@ -34,24 +34,24 @@ pub fn parse(p: *Parser) Ast {
 fn parseSourceFile(p: *Parser) node.SourceFile {
     var sf = p.create(node.SourceFile);
 
-    sf.imports = p.zeroOrMore(node.Import, parseImport, onImportToken);
+    sf.imports = p.zeroOrMore(node.Import, parseUse, onUseToken);
     sf.decls = p.zeroOrMore(node.Decl, parseDecl, notEof);
 
     return ok(sf);
 }
 
-fn onImportToken(p: *Parser) bool {
-    return p.on(.import);
+fn onUseToken(p: *Parser) bool {
+    return p.on(.use);
 }
 
 fn notEof(p: *Parser) bool {
     return !p.on(.eof);
 }
 
-fn parseImport(p: *Parser) node.Import {
+fn parseUse(p: *Parser) node.Import {
     var imp = p.create(node.Import);
-    if (!p.skipIf(.import)) return err(imp);
-    if (!p.expect(.str_lit)) return err(imp);
+    if (!p.skipIf(.use)) return err(imp);
+    if (!p.expect(.ident)) return err(imp);
     imp.module = p.munch();
     if (!p.skipIf(.semicolon)) return err(imp);
     return ok(imp);
@@ -470,6 +470,10 @@ fn parseFunParam(p: *Parser) node.FunParam {
     param.name = p.parseIdent();
     if (!p.skipIf(.colon)) return err(param);
     param.type = p.parseType();
+    if (p.on(.equal)) {
+        _ = p.next();
+        param.default = p.parseExpr();
+    }
     return ok(param);
 }
 
